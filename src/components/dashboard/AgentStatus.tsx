@@ -194,7 +194,6 @@ export const AgentStatus = ({ detailed = false }: AgentStatusProps) => {
                 <Switch
                   checked={agent.enabled}
                   onCheckedChange={() => toggleAgent(agent.agent_type, agent.enabled)}
-                  size="sm"
                 />
               </div>
             </div>
