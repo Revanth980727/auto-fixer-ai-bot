@@ -1,0 +1,26 @@
+
+{
+  "tickets": [
+    {
+      "jira_id": "BUG-001",
+      "title": "Application crashes when processing large files",
+      "description": "Users report that the application crashes when they try to process files larger than 100MB. This happens consistently across different file types.",
+      "error_trace": "Traceback (most recent call last):\n  File \"/app/file_processor.py\", line 45, in process_file\n    data = file.read()\n  File \"/usr/lib/python3.9/io.py\", line 322, in read\n    return self._readall()\nMemoryError: Unable to allocate 134217728 bytes",
+      "priority": "high"
+    },
+    {
+      "jira_id": "BUG-002", 
+      "title": "Login fails with special characters in password",
+      "description": "Users cannot log in when their password contains special characters like @, #, or &. The login form returns an 'Invalid credentials' error.",
+      "error_trace": "2024-01-15 10:30:25 ERROR: Authentication failed for user 'john@example.com'\n2024-01-15 10:30:25 DEBUG: Password hash comparison failed\n2024-01-15 10:30:25 INFO: SQL Query: SELECT * FROM users WHERE email = 'john@example.com' AND password = 'hashed_password'",
+      "priority": "medium"
+    },
+    {
+      "jira_id": "BUG-003",
+      "title": "Database connection timeout in production",
+      "description": "The application intermittently loses database connection in production environment, causing 500 errors for users.",
+      "error_trace": "pymysql.err.OperationalError: (2013, 'Lost connection to MySQL server during query ([Errno 110] Connection timed out)')\n  File \"/app/database.py\", line 78, in execute_query\n    cursor.execute(query, params)",
+      "priority": "critical"
+    }
+  ]
+}

@@ -5,72 +5,100 @@ Script to create test data for development
 import asyncio
 import sys
 import os
+import json
 
 # Add the parent directory to sys.path to import our modules
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from core.database import get_sync_db, init_db
 from core.models import Ticket, TicketStatus
+from core.config import config
 
 async def create_test_tickets():
-    """Create some test tickets for development"""
+    """Create test tickets based on configuration"""
+    
+    # Check if test data creation is enabled
+    if not config.create_test_data:
+        print("Test data creation is disabled in configuration")
+        return
     
     # Initialize database
     await init_db()
     
-    test_tickets = [
-        {
-            "jira_id": "BUG-001",
-            "title": "Application crashes when processing large files",
-            "description": "Users report that the application crashes when they try to process files larger than 100MB. This happens consistently across different file types.",
-            "error_trace": """
-Traceback (most recent call last):
-  File "/app/file_processor.py", line 45, in process_file
-    data = file.read()
-  File "/usr/lib/python3.9/io.py", line 322, in read
-    return self._readall()
-MemoryError: Unable to allocate 134217728 bytes
-            """,
-            "priority": "high",
-            "status": TicketStatus.TODO
-        },
-        {
-            "jira_id": "BUG-002", 
-            "title": "Login fails with special characters in password",
-            "description": "Users cannot log in when their password contains special characters like @, #, or &. The login form returns an 'Invalid credentials' error.",
-            "error_trace": """
-2024-01-15 10:30:25 ERROR: Authentication failed for user 'john@example.com'
-2024-01-15 10:30:25 DEBUG: Password hash comparison failed
-2024-01-15 10:30:25 INFO: SQL Query: SELECT * FROM users WHERE email = 'john@example.com' AND password = 'hashed_password'
-            """,
-            "priority": "medium",
-            "status": TicketStatus.TODO
-        },
-        {
-            "jira_id": "BUG-003",
-            "title": "Database connection timeout in production",
-            "description": "The application intermittently loses database connection in production environment, causing 500 errors for users.",
-            "error_trace": """
-pymysql.err.OperationalError: (2013, 'Lost connection to MySQL server during query ([Errno 110] Connection timed out)')
-  File "/app/database.py", line 78, in execute_query
-    cursor.execute(query, params)
-            """,
-            "priority": "critical",
-            "status": TicketStatus.TODO
-        }
-    ]
+    # Load test data from configuration file
+    test_data_path = os.path.join(os.path.dirname(__file__), config.test_data_config_file)
+    
+    try:
+        with open(test_data_path, 'r') as f:
+            test_data = json.load(f)
+    except FileNotFoundError:
+        print(f"Test data file not found: {test_data_path}")
+        return
+    except json.JSONDecodeError as e:
+        print(f"Error parsing test data file: {e}")
+        return
+    
+    test_tickets = test_data.get("tickets", [])
+    
+    if not test_tickets:
+        print("No test tickets found in configuration file")
+        return
     
     with next(get_sync_db()) as db:
+        created_count = 0
         for ticket_data in test_tickets:
             # Check if ticket already exists
             existing = db.query(Ticket).filter(Ticket.jira_id == ticket_data["jira_id"]).first()
             if not existing:
+                # Add default status if not specified
+                if "status" not in ticket_data:
+                    ticket_data["status"] = TicketStatus.TODO
+                
                 ticket = Ticket(**ticket_data)
                 db.add(ticket)
+                created_count += 1
                 print(f"Created test ticket: {ticket_data['jira_id']}")
         
         db.commit()
-        print("Test data creation completed!")
+        print(f"Test data creation completed! Created {created_count} tickets")
+
+async def clear_test_data():
+    """Clear all test data from database"""
+    await init_db()
+    
+    # Load test data to get IDs to remove
+    test_data_path = os.path.join(os.path.dirname(__file__), config.test_data_config_file)
+    
+    try:
+        with open(test_data_path, 'r') as f:
+            test_data = json.load(f)
+    except FileNotFoundError:
+        print(f"Test data file not found: {test_data_path}")
+        return
+    
+    test_tickets = test_data.get("tickets", [])
+    jira_ids = [ticket["jira_id"] for ticket in test_tickets]
+    
+    with next(get_sync_db()) as db:
+        deleted_count = 0
+        for jira_id in jira_ids:
+            ticket = db.query(Ticket).filter(Ticket.jira_id == jira_id).first()
+            if ticket:
+                db.delete(ticket)
+                deleted_count += 1
+                print(f"Deleted test ticket: {jira_id}")
+        
+        db.commit()
+        print(f"Test data cleanup completed! Deleted {deleted_count} tickets")
 
 if __name__ == "__main__":
-    asyncio.run(create_test_tickets())
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Manage test data")
+    parser.add_argument("action", choices=["create", "clear"], help="Action to perform")
+    args = parser.parse_args()
+    
+    if args.action == "create":
+        asyncio.run(create_test_tickets())
+    elif args.action == "clear":
+        asyncio.run(clear_test_data())

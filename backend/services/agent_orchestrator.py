@@ -1,8 +1,8 @@
-
 import asyncio
 from typing import Dict, Any
 from core.models import Ticket, TicketStatus, AgentType
 from core.database import get_sync_db
+from core.config import config
 from agents.intake_agent import IntakeAgent
 from agents.planner_agent import PlannerAgent
 from agents.developer_agent import DeveloperAgent
@@ -22,13 +22,19 @@ class AgentOrchestrator:
             AgentType.QA: QAAgent(),
             AgentType.COMMUNICATOR: CommunicatorAgent(),
         }
-        self.process_interval = 10  # seconds
-        self.intake_interval = 60   # seconds
+        # Use configured intervals
+        self.process_interval = config.agent_process_interval
+        self.intake_interval = config.agent_intake_interval
 
     async def start_processing(self):
         """Start processing tickets through agent pipeline"""
         self.running = True
-        logger.info("Starting agent orchestrator...")
+        logger.info(f"Starting agent orchestrator with intervals: process={self.process_interval}s, intake={self.intake_interval}s")
+        
+        # Validate configuration
+        missing_config = config.validate_required_config()
+        if missing_config:
+            logger.warning(f"Missing required configuration: {missing_config}")
         
         # Start intake polling in background
         asyncio.create_task(self._intake_polling_loop())
@@ -50,7 +56,10 @@ class AgentOrchestrator:
         """Separate loop for intake agent to poll JIRA"""
         while self.running:
             try:
-                await self.agents[AgentType.INTAKE].poll_and_create_tickets()
+                if config.jira_base_url and config.jira_api_token:
+                    await self.agents[AgentType.INTAKE].poll_and_create_tickets()
+                else:
+                    logger.debug("JIRA not configured, skipping intake polling")
                 await asyncio.sleep(self.intake_interval)
             except Exception as e:
                 logger.error(f"Error in intake polling: {e}")
@@ -136,10 +145,14 @@ class AgentOrchestrator:
                 logger.info(f"Ticket {ticket_id} queued for retry")
 
     async def get_agent_status(self) -> Dict[str, Any]:
-        """Get status of all agents"""
+        """Get status of all agents with configuration details"""
         return {
             "orchestrator_running": self.running,
-            "process_interval": self.process_interval,
-            "agents_available": list(self.agents.keys()),
-            "intake_polling": self.running
+            "configuration": config.to_dict(),
+            "intervals": {
+                "process": self.process_interval,
+                "intake": self.intake_interval
+            },
+            "agents_available": [agent_type.value for agent_type in self.agents.keys()],
+            "intake_polling": self.running and bool(config.jira_base_url and config.jira_api_token)
         }
