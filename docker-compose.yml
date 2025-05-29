@@ -9,18 +9,17 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://postgres:password@postgres:5432/ai_agents
-      - REDIS_URL=redis://redis:6379
+      - DATABASE_URL=sqlite:///./ai_agents.db
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - JIRA_API_TOKEN=${JIRA_API_TOKEN}
       - JIRA_BASE_URL=${JIRA_BASE_URL}
       - GITHUB_TOKEN=${GITHUB_TOKEN}
-    depends_on:
-      - postgres
-      - redis
+      - GITHUB_REPO_OWNER=${GITHUB_REPO_OWNER}
+      - GITHUB_REPO_NAME=${GITHUB_REPO_NAME}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
+      - sqlite_data:/app
 
   frontend:
     build:
@@ -34,24 +33,5 @@ services:
     depends_on:
       - backend
 
-  postgres:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=ai_agents
-      - POSTGRES_USER=postgres
-      - POSTGRES_PASSWORD=password
-    ports:
-      - "5432:5432"
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    volumes:
-      - redis_data:/data
-
 volumes:
-  postgres_data:
-  redis_data:
+  sqlite_data:

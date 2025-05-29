@@ -6,8 +6,8 @@ from core.models import Base
 import os
 from typing import Generator
 
-DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/ai_agents")
-ASYNC_DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///./ai_agents.db")
+ASYNC_DATABASE_URL = DATABASE_URL.replace("sqlite://", "sqlite+aiosqlite://")
 
 # Async engine for FastAPI
 async_engine = create_async_engine(ASYNC_DATABASE_URL, echo=True)
