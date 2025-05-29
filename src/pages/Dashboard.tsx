@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -11,6 +10,7 @@ import { MetricsCharts } from '@/components/dashboard/MetricsCharts';
 import { LiveLogs } from '@/components/dashboard/LiveLogs';
 import { WebSocketProvider } from '@/components/providers/WebSocketProvider';
 import { Activity, AlertCircle, CheckCircle, Clock, TrendingUp } from 'lucide-react';
+import { apiUrl } from '@/config/api';
 
 const Dashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
@@ -19,7 +19,7 @@ const Dashboard = () => {
   const { data: systemMetrics, isLoading: metricsLoading } = useQuery({
     queryKey: ['system-metrics'],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/metrics/system');
+      const response = await fetch(apiUrl('/api/metrics/system'));
       if (!response.ok) throw new Error('Failed to fetch metrics');
       return response.json();
     },
@@ -30,7 +30,7 @@ const Dashboard = () => {
   const { data: tickets, isLoading: ticketsLoading } = useQuery({
     queryKey: ['tickets'],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/tickets?limit=20');
+      const response = await fetch(apiUrl('/api/tickets?limit=20'));
       if (!response.ok) throw new Error('Failed to fetch tickets');
       return response.json();
     },

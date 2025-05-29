@@ -2,12 +2,13 @@
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { apiUrl } from '@/config/api';
 
 export const MetricsCharts = () => {
   const { data: metricsData, isLoading } = useQuery({
     queryKey: ['metrics-charts'],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/metrics/charts');
+      const response = await fetch(apiUrl('/api/metrics/charts'));
       if (!response.ok) throw new Error('Failed to fetch metrics data');
       return response.json();
     },

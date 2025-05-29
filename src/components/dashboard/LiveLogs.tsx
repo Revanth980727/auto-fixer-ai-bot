@@ -8,6 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Input } from '@/components/ui/input';
 import { Search, Download, Pause, Play, Filter } from 'lucide-react';
+import { apiUrl } from '@/config/api';
 
 interface LogEntry {
   id: string;
@@ -27,7 +28,7 @@ export const LiveLogs = () => {
   const { data: logs, isLoading, refetch } = useQuery({
     queryKey: ['live-logs'],
     queryFn: async () => {
-      const response = await fetch('http://localhost:8000/api/logs?limit=100');
+      const response = await fetch(apiUrl('/api/logs?limit=100'));
       if (!response.ok) throw new Error('Failed to fetch logs');
       return response.json();
     },

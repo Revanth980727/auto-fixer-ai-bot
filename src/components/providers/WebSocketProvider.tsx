@@ -1,6 +1,7 @@
 
 import React, { createContext, useContext, useEffect, useState, useRef } from 'react';
 import { toast } from '@/hooks/use-toast';
+import { API_CONFIG } from '@/config/api';
 
 interface WebSocketContextType {
   socket: WebSocket | null;
@@ -29,10 +30,10 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
 
   const connect = () => {
     try {
-      const ws = new WebSocket('ws://localhost:8000/ws');
+      const ws = new WebSocket(API_CONFIG.wsUrl);
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
+        console.log('WebSocket connected to', API_CONFIG.wsUrl);
         setConnected(true);
         reconnectAttempts.current = 0;
         
@@ -54,9 +55,12 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
                 title: "Ticket Updated",
                 description: `${data.ticket_id}: ${data.status}`,
               });
+              // Trigger query refetch for tickets
+              window.dispatchEvent(new CustomEvent('ticket-update', { detail: data }));
               break;
             case 'agent_status':
-              // Handle agent status updates
+              console.log('Agent status update:', data);
+              window.dispatchEvent(new CustomEvent('agent-status', { detail: data }));
               break;
             case 'system_alert':
               toast({
@@ -64,6 +68,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
                 description: data.message,
                 variant: data.severity === 'error' ? 'destructive' : 'default',
               });
+              break;
+            case 'log_entry':
+              window.dispatchEvent(new CustomEvent('new-log', { detail: data }));
               break;
             default:
               console.log('Unknown message type:', data.type);
