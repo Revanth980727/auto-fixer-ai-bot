@@ -16,16 +16,16 @@ class IntakeAgent(BaseAgent):
         # Load configuration values
         self.max_retries = config.agent_max_retries
     
-    async def process(self, ticket: Ticket, execution: AgentExecution) -> Dict[str, Any]:
+    async def process(self, ticket: Ticket, execution_id: int) -> Dict[str, Any]:
         """Process incoming tickets from JIRA"""
-        self.log_execution(execution, "Processing JIRA ticket intake")
+        self.log_execution(execution_id, "Processing JIRA ticket intake")
         
         # Validate ticket data
         if not ticket.jira_id or not ticket.title:
             raise ValueError("Invalid ticket data: missing JIRA ID or title")
         
         # Enrich ticket with additional JIRA data if needed
-        self.log_execution(execution, f"Processing ticket {ticket.jira_id}")
+        self.log_execution(execution_id, f"Processing ticket {ticket.jira_id}")
         
         # Calculate priority score and complexity using configuration
         priority_score = self._calculate_priority_score(ticket)
@@ -42,7 +42,7 @@ class IntakeAgent(BaseAgent):
             }
         }
         
-        self.log_execution(execution, f"Ticket processed with priority {priority_score} and complexity {complexity_estimate}")
+        self.log_execution(execution_id, f"Ticket processed with priority {priority_score} and complexity {complexity_estimate}")
         return result
     
     async def poll_and_create_tickets(self):

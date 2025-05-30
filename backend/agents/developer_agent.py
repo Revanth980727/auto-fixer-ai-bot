@@ -11,9 +11,9 @@ class DeveloperAgent(BaseAgent):
         super().__init__(AgentType.DEVELOPER)
         self.openai_client = OpenAIClient()
     
-    async def process(self, ticket: Ticket, execution: AgentExecution) -> Dict[str, Any]:
+    async def process(self, ticket: Ticket, execution_id: int) -> Dict[str, Any]:
         """Generate code patches for the ticket"""
-        self.log_execution(execution, "Starting code generation process")
+        self.log_execution(execution_id, "Starting code generation process")
         
         # Get planner analysis from previous execution
         planner_data = self._get_planner_analysis(ticket)
@@ -21,12 +21,12 @@ class DeveloperAgent(BaseAgent):
         # Generate patch for each likely file
         patches = []
         for file_info in planner_data.get("likely_files", []):
-            self.log_execution(execution, f"Generating patch for {file_info['path']}")
+            self.log_execution(execution_id, f"Generating patch for {file_info['path']}")
             
             patch_data = await self._generate_patch(ticket, file_info, planner_data)
             if patch_data:
                 patches.append(patch_data)
-                self._save_patch_attempt(ticket, execution, patch_data)
+                self._save_patch_attempt(ticket, execution_id, patch_data)
         
         result = {
             "patches_generated": len(patches),
@@ -34,7 +34,7 @@ class DeveloperAgent(BaseAgent):
             "planner_analysis": planner_data
         }
         
-        self.log_execution(execution, f"Generated {len(patches)} patches")
+        self.log_execution(execution_id, f"Generated {len(patches)} patches")
         return result
     
     def _get_planner_analysis(self, ticket: Ticket) -> Dict[str, Any]:
@@ -86,12 +86,12 @@ Please provide your solution in JSON format:
         except (json.JSONDecodeError, Exception) as e:
             return None
     
-    def _save_patch_attempt(self, ticket: Ticket, execution: AgentExecution, patch_data: Dict):
+    def _save_patch_attempt(self, ticket: Ticket, execution_id: int, patch_data: Dict):
         """Save patch attempt to database"""
         with next(get_sync_db()) as db:
             patch = PatchAttempt(
                 ticket_id=ticket.id,
-                execution_id=execution.id,
+                execution_id=execution_id,
                 patch_content=patch_data.get("patch_content", ""),
                 patched_code=patch_data.get("patched_code", ""),
                 test_code=patch_data.get("test_code", ""),

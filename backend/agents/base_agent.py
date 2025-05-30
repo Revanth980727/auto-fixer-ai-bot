@@ -16,7 +16,7 @@ class BaseAgent(ABC):
         self.max_retries = config.agent_max_retries
         
     @abstractmethod
-    async def process(self, ticket: Ticket, execution: AgentExecution) -> Dict[str, Any]:
+    async def process(self, ticket: Ticket, execution_id: int) -> Dict[str, Any]:
         """Process a ticket and return results"""
         pass
     
@@ -80,13 +80,7 @@ class BaseAgent(ABC):
             try:
                 self.log_execution(execution_id, f"Starting attempt {attempt + 1}/{self.max_retries + 1}")
                 
-                # Get fresh execution object for this attempt
-                with next(get_sync_db()) as db:
-                    execution = db.query(AgentExecution).filter(AgentExecution.id == execution_id).first()
-                    if not execution:
-                        raise Exception(f"Execution {execution_id} not found")
-                    
-                    result = await self.process(ticket, execution)
+                result = await self.process(ticket, execution_id)
                 
                 self.update_execution(execution_id, "completed", output_data=result)
                 self.log_execution(execution_id, "Completed successfully")

@@ -11,14 +11,14 @@ class PlannerAgent(BaseAgent):
         super().__init__(AgentType.PLANNER)
         self.openai_client = OpenAIClient()
     
-    async def process(self, ticket: Ticket, execution: AgentExecution) -> Dict[str, Any]:
+    async def process(self, ticket: Ticket, execution_id: int) -> Dict[str, Any]:
         """Analyze ticket and create execution plan"""
-        self.log_execution(execution, "Analyzing ticket content and error traces")
+        self.log_execution(execution_id, "Analyzing ticket content and error traces")
         
         # Extract key information from ticket
         analysis_prompt = self._create_analysis_prompt(ticket)
         
-        self.log_execution(execution, "Sending analysis request to GPT-4")
+        self.log_execution(execution_id, "Sending analysis request to GPT-4")
         analysis_result = await self.openai_client.complete_chat([
             {"role": "system", "content": "You are an expert software engineer analyzing bug reports. Provide structured analysis in JSON format."},
             {"role": "user", "content": analysis_prompt}
@@ -26,10 +26,10 @@ class PlannerAgent(BaseAgent):
         
         try:
             parsed_result = json.loads(analysis_result)
-            self.log_execution(execution, f"Analysis completed: {len(parsed_result.get('likely_files', []))} files identified")
+            self.log_execution(execution_id, f"Analysis completed: {len(parsed_result.get('likely_files', []))} files identified")
             return parsed_result
         except json.JSONDecodeError:
-            self.log_execution(execution, "Failed to parse GPT-4 response as JSON, using fallback analysis")
+            self.log_execution(execution_id, "Failed to parse GPT-4 response as JSON, using fallback analysis")
             return self._fallback_analysis(ticket)
     
     def _create_analysis_prompt(self, ticket: Ticket) -> str:

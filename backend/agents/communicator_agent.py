@@ -15,15 +15,15 @@ class CommunicatorAgent(BaseAgent):
         self.github_client = GitHubClient()
         self.jira_client = JIRAClient()
     
-    async def process(self, ticket: Ticket, execution: AgentExecution) -> Dict[str, Any]:
+    async def process(self, ticket: Ticket, execution_id: int) -> Dict[str, Any]:
         """Create GitHub PR and update JIRA ticket"""
-        self.log_execution(execution, "Starting communication process")
+        self.log_execution(execution_id, "Starting communication process")
         
         # Get successful patches
         successful_patches = self._get_successful_patches(ticket)
         
         if not successful_patches:
-            self.log_execution(execution, "No successful patches to deploy")
+            self.log_execution(execution_id, "No successful patches to deploy")
             return {"status": "no_patches", "actions_taken": []}
         
         actions_taken = []
@@ -35,7 +35,7 @@ class CommunicatorAgent(BaseAgent):
             # Create branch
             branch_created = await self.github_client.create_branch(branch_name)
             if branch_created:
-                self.log_execution(execution, f"Created branch: {branch_name}")
+                self.log_execution(execution_id, f"Created branch: {branch_name}")
                 actions_taken.append(f"Created branch {branch_name}")
                 
                 # Commit patches
@@ -56,7 +56,7 @@ class CommunicatorAgent(BaseAgent):
                         actions_taken.append("Updated JIRA ticket")
                 
         except Exception as e:
-            self.log_execution(execution, f"Error in communication process: {e}")
+            self.log_execution(execution_id, f"Error in communication process: {e}")
             return {"status": "error", "error": str(e), "actions_taken": actions_taken}
         
         result = {
@@ -66,7 +66,7 @@ class CommunicatorAgent(BaseAgent):
             "branch_name": branch_name
         }
         
-        self.log_execution(execution, f"Communication completed: {len(actions_taken)} actions taken")
+        self.log_execution(execution_id, f"Communication completed: {len(actions_taken)} actions taken")
         return result
     
     def _get_successful_patches(self, ticket: Ticket) -> list:
