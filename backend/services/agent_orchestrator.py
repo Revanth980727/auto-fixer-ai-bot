@@ -42,9 +42,14 @@ class AgentOrchestrator:
         if missing_config:
             logger.warning(f"Missing required configuration: {missing_config}")
         
-        # Log GitHub configuration status
+        # Check GitHub configuration - this is now a hard requirement
         github_status = self.github_client.get_configuration_status()
         logger.info(f"GitHub configuration status: {github_status}")
+        
+        if not github_status.get("configured"):
+            logger.error("GitHub is not properly configured - agent processing requires GitHub access")
+            logger.error("Please configure GITHUB_TOKEN, GITHUB_REPO_OWNER, and GITHUB_REPO_NAME")
+            return
         
         # Start intake polling in background
         asyncio.create_task(self._intake_polling_loop())
@@ -66,7 +71,6 @@ class AgentOrchestrator:
         """Background loop for intake polling"""
         while self.running:
             try:
-                # Fix: Use the correct method name from IntakeAgent
                 await self.agents[AgentType.INTAKE].poll_and_create_tickets()
                 await asyncio.sleep(self.intake_interval)
             except Exception as e:
@@ -85,14 +89,14 @@ class AgentOrchestrator:
             ticket_ids = [ticket.id for ticket in pending_tickets]
             
         if ticket_ids:
-            logger.info(f"Found {len(ticket_ids)} pending tickets to process: {ticket_ids}")
+            logger.info(f"🎯 Found {len(ticket_ids)} pending tickets to process: {ticket_ids}")
         
         # Process each ticket using its ID
         for ticket_id in ticket_ids:
             try:
                 await self.process_ticket_pipeline(ticket_id)
             except Exception as e:
-                logger.error(f"Error processing ticket {ticket_id}: {e}")
+                logger.error(f"💥 Error processing ticket {ticket_id}: {e}")
 
     async def process_ticket_pipeline(self, ticket_id: int):
         """Process a single ticket through the complete agent pipeline with proper validation"""
@@ -103,7 +107,7 @@ class AgentOrchestrator:
         with next(get_sync_db()) as db:
             ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
             if not ticket:
-                logger.error(f"Ticket {ticket_id} not found")
+                logger.error(f"❌ Ticket {ticket_id} not found")
                 return
                 
             logger.info(f"📋 Ticket {ticket_id}: {ticket.title} (Status: {ticket.status})")
@@ -128,12 +132,20 @@ class AgentOrchestrator:
             with next(get_sync_db()) as db:
                 ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
                 if not ticket:
-                    logger.error(f"Ticket {ticket_id} not found during processing")
+                    logger.error(f"❌ Ticket {ticket_id} not found during processing")
                     return
                 
                 # Step 1: Planner agent analyzes the ticket with repository context
                 logger.info(f"🧠 STEP 1: Running planner agent for ticket {ticket_id}")
                 planner_context = await self._prepare_planner_context(ticket)
+                
+                # Check if planner context is valid (no GitHub access issues)
+                if not planner_context or planner_context.get("github_access_failed"):
+                    logger.warning(f"⚠️ GitHub access failed for ticket {ticket_id} - marking for human intervention")
+                    await self._mark_ticket_for_review(ticket_id, jira_id, 
+                        "GitHub repository access failed. Unable to fetch source files for analysis. Please verify GitHub configuration and retry manually.")
+                    return
+                
                 logger.info(f"📊 Planner context prepared: {len(planner_context.get('error_trace_files', []))} error trace files")
                 
                 planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket, planner_context)
@@ -144,13 +156,23 @@ class AgentOrchestrator:
                 if not self._validate_planner_results(planner_result):
                     logger.warning(f"⚠️ Planner validation failed for ticket {ticket_id}")
                     logger.info(f"❌ Planner result validation details: {planner_result}")
-                    raise Exception("Planner agent failed to identify target files or root cause")
+                    await self._mark_ticket_for_review(ticket_id, jira_id, 
+                        "Planner agent failed to identify target files or root cause. Manual analysis required.")
+                    return
                 
                 logger.info(f"✅ Planner validation passed for ticket {ticket_id}")
                 
                 # Step 2: Developer agent generates patches with code context
                 logger.info(f"👨‍💻 STEP 2: Running developer agent for ticket {ticket_id}")
                 developer_context = await self._prepare_developer_context(ticket, planner_result)
+                
+                # Check if developer context is valid (no GitHub access issues)
+                if not developer_context or developer_context.get("github_access_failed"):
+                    logger.warning(f"⚠️ GitHub access failed during developer context preparation for ticket {ticket_id}")
+                    await self._mark_ticket_for_review(ticket_id, jira_id, 
+                        "Unable to fetch source files for patch generation. GitHub repository access required.")
+                    return
+                
                 logger.info(f"📊 Developer context prepared: {len(developer_context.get('source_files', []))} source files")
                 
                 developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket, developer_context)
@@ -161,7 +183,9 @@ class AgentOrchestrator:
                 if not self._validate_developer_results(developer_result):
                     logger.warning(f"⚠️ Developer validation failed for ticket {ticket_id}")
                     logger.info(f"❌ Developer result validation details: {developer_result}")
-                    raise Exception("Developer agent failed to generate valid patches")
+                    await self._mark_ticket_for_review(ticket_id, jira_id, 
+                        "Developer agent failed to generate valid patches. Manual code changes required.")
+                    return
                 
                 logger.info(f"✅ Developer validation passed for ticket {ticket_id}")
                 
@@ -203,17 +227,8 @@ class AgentOrchestrator:
                 # QA failed or no successful patches, mark as IN_REVIEW for human intervention
                 logger.warning(f"⚠️ QA validation failed for ticket {ticket_id} - marking for human review")
                 
-                with next(get_sync_db()) as db:
-                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-                    if ticket:
-                        ticket.status = TicketStatus.IN_REVIEW
-                        db.add(ticket)
-                        db.commit()
-                
-                # Update Jira status to "Needs Review" for human intervention
                 qa_message = "QA testing failed - no patches passed validation." if qa_result.get("successful_patches", 0) == 0 else "QA testing completed but patches were not ready for deployment."
-                await self._update_jira_status(jira_id, "Needs Review", 
-                                             f"AI Agent processed this ticket but requires human review. {qa_message}")
+                await self._mark_ticket_for_review(ticket_id, jira_id, qa_message)
                 
                 logger.warning(f"🔍 PIPELINE REVIEW NEEDED: Ticket {ticket_id} - {qa_message} - marked as IN_REVIEW")
             
@@ -233,12 +248,8 @@ class AgentOrchestrator:
                     # Check if we've exceeded max retries
                     if current_retry_count >= config.agent_max_retries:
                         # Update ticket to IN_REVIEW and Jira status to "Needs Review" after max retries
-                        ticket.status = TicketStatus.IN_REVIEW
-                        db.add(ticket)
-                        db.commit()
-                        
-                        await self._update_jira_status(jira_id, "Needs Review", 
-                                                     f"AI Agent failed to process this ticket after {config.agent_max_retries} attempts. Human intervention required. Error: {str(e)}")
+                        await self._mark_ticket_for_review(ticket_id, jira_id, 
+                            f"AI Agent failed to process this ticket after {config.agent_max_retries} attempts. Error: {str(e)}")
                         logger.error(f"🚫 PIPELINE FAILED: Ticket {ticket_id} failed after {config.agent_max_retries} retries - marked as IN_REVIEW: {e}")
                     else:
                         # Will retry, keep ticket status as failed for now
@@ -247,8 +258,13 @@ class AgentOrchestrator:
             raise e
 
     async def _prepare_planner_context(self, ticket: Ticket) -> Dict[str, Any]:
-        """Prepare context for planner agent including repository information with fallback"""
+        """Prepare context for planner agent - requires GitHub access"""
         logger.info(f"🔍 Preparing planner context for ticket {ticket.id}")
+        
+        # Check GitHub configuration first
+        if not self.github_client._is_configured():
+            logger.error(f"❌ GitHub not configured - cannot prepare planner context for ticket {ticket.id}")
+            return {"github_access_failed": True}
         
         context = {
             "ticket": ticket,
@@ -261,6 +277,7 @@ class AgentOrchestrator:
             file_matches = re.findall(r'File "([^"]+)"', ticket.error_trace)
             logger.info(f"📁 Found {len(file_matches)} files in error trace: {file_matches}")
             
+            files_fetched = 0
             for file_path in file_matches:
                 try:
                     file_content = await self.github_client.get_file_content(file_path)
@@ -269,30 +286,107 @@ class AgentOrchestrator:
                             "path": file_path,
                             "content": file_content
                         })
+                        files_fetched += 1
                         logger.info(f"✅ Successfully fetched error trace file: {file_path}")
                     else:
-                        # Add fallback synthetic context for missing files
-                        context["error_trace_files"].append({
-                            "path": file_path,
-                            "content": self._generate_mock_file_content(file_path, ticket),
-                            "is_mock": True
-                        })
-                        logger.info(f"🔄 Added mock content for missing file: {file_path}")
+                        logger.warning(f"⚠️ File not found in repository: {file_path}")
                 except Exception as e:
-                    logger.warning(f"⚠️ Could not fetch file {file_path}: {e}")
-                    # Add fallback context even for failed fetches
-                    context["error_trace_files"].append({
-                        "path": file_path,
-                        "content": self._generate_mock_file_content(file_path, ticket),
-                        "is_mock": True
-                    })
+                    logger.error(f"❌ Could not fetch file {file_path}: {e}")
+            
+            # If we couldn't fetch any files, this is a failure
+            if files_fetched == 0 and len(file_matches) > 0:
+                logger.error(f"❌ Failed to fetch any source files for ticket {ticket.id}")
+                return {"github_access_failed": True}
         else:
             logger.warning(f"⚠️ No error trace found for ticket {ticket.id}")
         
         logger.info(f"✅ Planner context ready: {len(context['error_trace_files'])} files prepared")
         return context
 
-    # ... keep existing code (_prepare_developer_context, _generate_mock_file_content, _guess_main_file_from_ticket, _prepare_qa_context, _prepare_communicator_context methods)
+    async def _prepare_developer_context(self, ticket: Ticket, planner_result: Dict) -> Dict[str, Any]:
+        """Prepare context for developer agent - requires GitHub access"""
+        logger.info(f"🔍 Preparing developer context for ticket {ticket.id}")
+        
+        # Check GitHub configuration first
+        if not self.github_client._is_configured():
+            logger.error(f"❌ GitHub not configured - cannot prepare developer context for ticket {ticket.id}")
+            return {"github_access_failed": True}
+        
+        context = {
+            "planner_analysis": planner_result,
+            "source_files": []
+        }
+        
+        # Get likely files from planner analysis
+        likely_files = planner_result.get("likely_files", [])
+        
+        files_fetched = 0
+        for file_info in likely_files:
+            file_path = file_info.get("path") if isinstance(file_info, dict) else str(file_info)
+            
+            try:
+                file_content = await self.github_client.get_file_content(file_path)
+                if file_content:
+                    context["source_files"].append({
+                        "path": file_path,
+                        "content": file_content,
+                        "priority": file_info.get("priority", "medium") if isinstance(file_info, dict) else "medium"
+                    })
+                    files_fetched += 1
+                    logger.info(f"✅ Successfully fetched source file: {file_path}")
+                else:
+                    logger.warning(f"⚠️ Source file not found in repository: {file_path}")
+            except Exception as e:
+                logger.error(f"❌ Could not fetch source file {file_path}: {e}")
+        
+        # If we couldn't fetch any source files, this is a failure
+        if files_fetched == 0 and len(likely_files) > 0:
+            logger.error(f"❌ Failed to fetch any source files for ticket {ticket.id}")
+            return {"github_access_failed": True}
+        
+        logger.info(f"✅ Developer context ready: {len(context['source_files'])} source files prepared")
+        return context
+
+    async def _prepare_qa_context(self, ticket: Ticket, developer_result: Dict) -> Dict[str, Any]:
+        """Prepare context for QA agent"""
+        logger.info(f"🔍 Preparing QA context for ticket {ticket.id}")
+        
+        context = {
+            "patches": developer_result.get("patches", []),
+            "planner_analysis": developer_result.get("planner_analysis", {}),
+            "ticket": ticket
+        }
+        
+        logger.info(f"✅ QA context ready: {len(context['patches'])} patches to test")
+        return context
+
+    async def _prepare_communicator_context(self, ticket: Ticket, qa_result: Dict) -> Dict[str, Any]:
+        """Prepare context for communicator agent"""
+        logger.info(f"🔍 Preparing communicator context for ticket {ticket.id}")
+        
+        context = {
+            "qa_results": qa_result,
+            "ticket": ticket,
+            "patches": qa_result.get("validated_patches", [])
+        }
+        
+        logger.info(f"✅ Communicator context ready")
+        return context
+
+    async def _mark_ticket_for_review(self, ticket_id: int, jira_id: str, reason: str):
+        """Mark ticket as needing human review and update Jira"""
+        with next(get_sync_db()) as db:
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+            if ticket:
+                ticket.status = TicketStatus.IN_REVIEW
+                db.add(ticket)
+                db.commit()
+        
+        # Update Jira status to "Needs Review"
+        await self._update_jira_status(jira_id, "Needs Review", 
+                                     f"AI Agent requires human intervention. {reason}")
+        
+        logger.warning(f"🔍 Ticket {ticket_id} marked for human review: {reason}")
 
     def _validate_planner_results(self, result: Dict) -> bool:
         """Validate that planner agent produced meaningful results"""
@@ -351,4 +445,49 @@ class AgentOrchestrator:
         logger.info(f"✅ Developer validation passed: {len(patches)} patches generated")
         return True
 
-    # ... keep existing code (remaining methods like retry_failed_ticket, _update_jira_status, get_agent_status)
+    async def retry_failed_ticket(self, ticket_id: int):
+        """Retry processing a failed ticket"""
+        logger.info(f"🔄 Retrying failed ticket {ticket_id}")
+        
+        with next(get_sync_db()) as db:
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+            if ticket and ticket.status == TicketStatus.FAILED:
+                ticket.status = TicketStatus.TODO
+                ticket.retry_count = 0
+                db.add(ticket)
+                db.commit()
+                logger.info(f"✅ Ticket {ticket_id} reset for retry")
+            else:
+                logger.warning(f"⚠️ Cannot retry ticket {ticket_id} - not in FAILED status")
+
+    async def _update_jira_status(self, jira_id: str, status: str, comment: str):
+        """Update JIRA ticket status and add comment"""
+        try:
+            if jira_id:
+                # Add comment to JIRA
+                await self.jira_client.add_comment(jira_id, comment)
+                
+                # Update status if possible (this may fail if workflow doesn't allow it)
+                try:
+                    await self.jira_client.update_status(jira_id, status)
+                    logger.info(f"✅ Updated JIRA {jira_id} status to {status}")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not update JIRA status to {status}: {e}")
+        except Exception as e:
+            logger.error(f"❌ Failed to update JIRA {jira_id}: {e}")
+
+    def get_agent_status(self) -> Dict[str, Any]:
+        """Get current status of all agents"""
+        return {
+            "orchestrator_running": self.running,
+            "process_interval": self.process_interval,
+            "intake_interval": self.intake_interval,
+            "agents": {
+                agent_type.value: {
+                    "type": agent_type.value,
+                    "available": True
+                } for agent_type in AgentType
+            },
+            "github_configured": self.github_client._is_configured(),
+            "jira_configured": bool(config.jira_base_url and config.jira_api_token)
+        }
