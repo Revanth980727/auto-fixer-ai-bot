@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from core.models import Ticket, AgentExecution, AgentType
 from core.database import get_sync_db
+from core.config import config
 from datetime import datetime
 import logging
 import json
@@ -12,7 +13,7 @@ logger = logging.getLogger(__name__)
 class BaseAgent(ABC):
     def __init__(self, agent_type: AgentType):
         self.agent_type = agent_type
-        self.max_retries = 3
+        self.max_retries = config.agent_max_retries
         
     @abstractmethod
     async def process(self, ticket: Ticket, execution: AgentExecution) -> Dict[str, Any]:
@@ -67,7 +68,7 @@ class BaseAgent(ABC):
         
         for attempt in range(self.max_retries + 1):
             try:
-                self.log_execution(execution, f"Starting attempt {attempt + 1}")
+                self.log_execution(execution, f"Starting attempt {attempt + 1}/{self.max_retries + 1}")
                 result = await self.process(ticket, execution)
                 
                 self.update_execution(execution, "completed", output_data=result)
@@ -80,8 +81,17 @@ class BaseAgent(ABC):
                 
                 if attempt == self.max_retries:
                     self.update_execution(execution, "failed", error_message=error_msg)
+                    self.log_execution(execution, f"Failed after {self.max_retries + 1} attempts")
+                    
+                    # Update ticket retry count
+                    with next(get_sync_db()) as db:
+                        ticket.retry_count += 1
+                        db.add(ticket)
+                        db.commit()
+                    
                     raise e
                 
                 execution.retry_count += 1
                 
         return {}
+
