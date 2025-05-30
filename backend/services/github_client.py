@@ -17,10 +17,20 @@ class GitHubClient:
             "Accept": "application/vnd.github.v3+json"
         }
         self.base_url = "https://api.github.com"
+        self._log_configuration()
+    
+    def _log_configuration(self):
+        """Log GitHub configuration status"""
+        logger.info(f"GitHub Configuration - Token present: {'Yes' if self.token else 'No'}")
+        logger.info(f"GitHub Configuration - Repo owner: {self.repo_owner or 'Not set'}")
+        logger.info(f"GitHub Configuration - Repo name: {self.repo_name or 'Not set'}")
+        if not self._is_configured():
+            logger.warning("GitHub client is not properly configured - will operate in degraded mode")
     
     async def get_file_content(self, file_path: str, branch: str = "main") -> Optional[str]:
-        """Get file content from repository"""
+        """Get file content from repository with better error handling"""
         if not self._is_configured():
+            logger.warning(f"GitHub not configured - cannot fetch {file_path}")
             return None
         
         try:
@@ -30,18 +40,23 @@ class GitHubClient:
             if response.status_code == 200:
                 data = response.json()
                 content = base64.b64decode(data["content"]).decode("utf-8")
+                logger.info(f"Successfully fetched file: {file_path}")
                 return content
+            elif response.status_code == 404:
+                logger.warning(f"File not found in repository: {file_path}")
+                return None
             else:
-                logger.error(f"Failed to get file {file_path}: {response.status_code}")
+                logger.error(f"Failed to get file {file_path}: HTTP {response.status_code} - {response.text}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error getting file content: {e}")
+            logger.error(f"Error getting file content for {file_path}: {e}")
             return None
     
     async def create_branch(self, branch_name: str, base_branch: str = "main") -> bool:
         """Create a new branch"""
         if not self._is_configured():
+            logger.warning("GitHub not configured - cannot create branch")
             return False
         
         try:
@@ -50,6 +65,7 @@ class GitHubClient:
             ref_response = requests.get(ref_url, headers=self.headers)
             
             if ref_response.status_code != 200:
+                logger.error(f"Failed to get base branch {base_branch}: {ref_response.status_code}")
                 return False
             
             base_sha = ref_response.json()["object"]["sha"]
@@ -62,7 +78,12 @@ class GitHubClient:
             }
             
             response = requests.post(create_url, headers=self.headers, json=create_data)
-            return response.status_code == 201
+            if response.status_code == 201:
+                logger.info(f"Successfully created branch: {branch_name}")
+                return True
+            else:
+                logger.error(f"Failed to create branch {branch_name}: {response.status_code}")
+                return False
             
         except Exception as e:
             logger.error(f"Error creating branch {branch_name}: {e}")
@@ -71,6 +92,7 @@ class GitHubClient:
     async def commit_file(self, file_path: str, content: str, commit_message: str, branch: str) -> bool:
         """Commit file changes to repository"""
         if not self._is_configured():
+            logger.warning("GitHub not configured - cannot commit file")
             return False
         
         try:
@@ -89,7 +111,12 @@ class GitHubClient:
                 commit_data["sha"] = file_response.json()["sha"]
             
             response = requests.put(file_url, headers=self.headers, json=commit_data)
-            return response.status_code in [200, 201]
+            if response.status_code in [200, 201]:
+                logger.info(f"Successfully committed file: {file_path}")
+                return True
+            else:
+                logger.error(f"Failed to commit file {file_path}: {response.status_code}")
+                return False
             
         except Exception as e:
             logger.error(f"Error committing file {file_path}: {e}")
@@ -98,6 +125,7 @@ class GitHubClient:
     async def create_pull_request(self, title: str, body: str, head_branch: str, base_branch: str = "main") -> Optional[Dict]:
         """Create a pull request"""
         if not self._is_configured():
+            logger.warning("GitHub not configured - cannot create pull request")
             return None
         
         try:
@@ -112,9 +140,10 @@ class GitHubClient:
             response = requests.post(pr_url, headers=self.headers, json=pr_data)
             
             if response.status_code == 201:
+                logger.info(f"Successfully created pull request: {title}")
                 return response.json()
             else:
-                logger.error(f"Failed to create PR: {response.status_code}")
+                logger.error(f"Failed to create PR: {response.status_code} - {response.text}")
                 return None
                 
         except Exception as e:
@@ -124,3 +153,13 @@ class GitHubClient:
     def _is_configured(self) -> bool:
         """Check if GitHub client is properly configured"""
         return bool(self.token and self.repo_owner and self.repo_name)
+    
+    def get_configuration_status(self) -> Dict[str, Any]:
+        """Get configuration status for debugging"""
+        return {
+            "configured": self._is_configured(),
+            "has_token": bool(self.token),
+            "has_repo_owner": bool(self.repo_owner),
+            "has_repo_name": bool(self.repo_name),
+            "repo_full_name": f"{self.repo_owner}/{self.repo_name}" if self.repo_owner and self.repo_name else None
+        }

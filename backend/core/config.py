@@ -34,6 +34,11 @@ class Config:
         if self.jira_api_token:
             logger.info(f"Config loaded - JIRA_API_TOKEN length: {len(self.jira_api_token)}")
         
+        # GitHub Configuration logging
+        logger.info(f"Config loaded - GITHUB_TOKEN present: {'Yes' if self.github_token else 'No'}")
+        logger.info(f"Config loaded - GITHUB_REPO_OWNER: {self.github_repo_owner or 'Not set'}")
+        logger.info(f"Config loaded - GITHUB_REPO_NAME: {self.github_repo_name or 'Not set'}")
+        
         # JIRA Configuration
         self.jira_issue_types = self._parse_list(os.getenv("JIRA_ISSUE_TYPES", "Bug"))
         self.jira_statuses = self._parse_list(os.getenv("JIRA_STATUSES", "To Do,Open,New"))
@@ -73,12 +78,34 @@ class Config:
         # Log the generated JQL for debugging
         jql = self.get_jira_jql()
         logger.info(f"Generated JQL query: {jql}")
+        
+        # Validate and warn about missing configurations
+        self._validate_and_warn_configuration()
     
     def _parse_list(self, value: str) -> List[str]:
         """Parse comma-separated string into list"""
         if not value:
             return []
         return [item.strip() for item in value.split(',') if item.strip()]
+    
+    def _validate_and_warn_configuration(self):
+        """Validate configuration and log warnings for missing items"""
+        warnings = []
+        
+        if not self.openai_api_key:
+            warnings.append("OPENAI_API_KEY is not set - AI agents will not function")
+        
+        if not self.jira_base_url or not self.jira_api_token:
+            warnings.append("JIRA configuration incomplete - ticket integration will not work")
+        
+        if not self.github_token or not self.github_repo_owner or not self.github_repo_name:
+            warnings.append("GitHub configuration incomplete - will operate in degraded mode with mock content")
+        
+        for warning in warnings:
+            logger.warning(f"Configuration Warning: {warning}")
+        
+        if warnings:
+            logger.warning("Some features may not work properly due to missing configuration")
     
     def get_jira_jql(self) -> str:
         """Generate JQL query based on configuration"""
@@ -93,11 +120,7 @@ class Config:
         if statuses:
             jql += f" AND status IN ('{statuses}')"
         
-        # Removed time constraint - will search for ALL tickets with the specified status
-        
         return jql
-    
-    # ... keep existing code (validate_required_config and to_dict methods)
     
     def validate_required_config(self) -> List[str]:
         """Validate that required configuration is present"""
@@ -114,6 +137,16 @@ class Config:
         
         return missing
     
+    def get_github_status(self) -> Dict[str, Any]:
+        """Get GitHub configuration status"""
+        return {
+            "configured": bool(self.github_token and self.github_repo_owner and self.github_repo_name),
+            "has_token": bool(self.github_token),
+            "has_repo_owner": bool(self.github_repo_owner),
+            "has_repo_name": bool(self.github_repo_name),
+            "repo_full_name": f"{self.github_repo_owner}/{self.github_repo_name}" if self.github_repo_owner and self.github_repo_name else None
+        }
+    
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary for API responses"""
         return {
@@ -123,6 +156,7 @@ class Config:
             "jira_project_key": self.jira_project_key,
             "jira_issue_types": self.jira_issue_types,
             "jira_statuses": self.jira_statuses,
+            "github_status": self.get_github_status(),
             "agent_intervals": {
                 "process": self.agent_process_interval,
                 "intake": self.agent_intake_interval,
