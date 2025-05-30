@@ -107,4 +107,4 @@ class SystemMetrics(Base):
     metric_name = Column(String)
     metric_value = Column(Float)
     timestamp = Column(DateTime, default=datetime.utcnow)
-    metadata = Column(JSON)
+    metric_metadata = Column(JSON)
