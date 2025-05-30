@@ -9,13 +9,65 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=sqlite:///./ai_agents.db
+      # Database
+      - DATABASE_URL=sqlite:///./ai_agent_system.db
+      
+      # OpenAI
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      
+      # Jira Configuration
       - JIRA_API_TOKEN=${JIRA_API_TOKEN}
       - JIRA_BASE_URL=${JIRA_BASE_URL}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY}
+      - JIRA_USERNAME=${JIRA_USERNAME}
+      - JIRA_ISSUE_TYPES=${JIRA_ISSUE_TYPES}
+      - JIRA_STATUSES=${JIRA_STATUSES}
+      - JIRA_POLL_HOURS=${JIRA_POLL_HOURS}
+      - JIRA_MAX_RESULTS=${JIRA_MAX_RESULTS}
+      - JIRA_PRIORITY_FIELD=${JIRA_PRIORITY_FIELD}
+      
+      # GitHub Configuration
       - GITHUB_TOKEN=${GITHUB_TOKEN}
       - GITHUB_REPO_OWNER=${GITHUB_REPO_OWNER}
       - GITHUB_REPO_NAME=${GITHUB_REPO_NAME}
+      
+      # Agent Configuration
+      - AGENT_MAX_RETRIES=${AGENT_MAX_RETRIES}
+      - AGENT_PROCESS_INTERVAL=${AGENT_PROCESS_INTERVAL}
+      - AGENT_INTAKE_INTERVAL=${AGENT_INTAKE_INTERVAL}
+      - AGENT_POLL_INTERVAL=${AGENT_POLL_INTERVAL}
+      
+      # Priority Configuration
+      - PRIORITY_CRITICAL_WEIGHT=${PRIORITY_CRITICAL_WEIGHT}
+      - PRIORITY_HIGH_WEIGHT=${PRIORITY_HIGH_WEIGHT}
+      - PRIORITY_MEDIUM_WEIGHT=${PRIORITY_MEDIUM_WEIGHT}
+      - PRIORITY_LOW_WEIGHT=${PRIORITY_LOW_WEIGHT}
+      - PRIORITY_ERROR_TRACE_BOOST=${PRIORITY_ERROR_TRACE_BOOST}
+      - PRIORITY_URGENT_KEYWORD_BOOST=${PRIORITY_URGENT_KEYWORD_BOOST}
+      
+      # Complexity Configuration
+      - COMPLEXITY_DESCRIPTION_THRESHOLD=${COMPLEXITY_DESCRIPTION_THRESHOLD}
+      - COMPLEXITY_DEFAULT=${COMPLEXITY_DEFAULT}
+      
+      # Test Data Configuration
+      - CREATE_TEST_DATA=${CREATE_TEST_DATA}
+      - TEST_DATA_CONFIG_FILE=${TEST_DATA_CONFIG_FILE}
+      
+      # Urgent Keywords
+      - URGENT_KEYWORDS=${URGENT_KEYWORDS}
+      
+      # API Configuration
+      - API_BASE_URL=${API_BASE_URL}
+      - FRONTEND_URL=${FRONTEND_URL}
+      
+      # Security
+      - SECRET_KEY=${SECRET_KEY}
+      
+      # Redis
+      - REDIS_URL=${REDIS_URL}
+      
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL}
     volumes:
       - ./backend:/app
       - ./logs:/app/logs
