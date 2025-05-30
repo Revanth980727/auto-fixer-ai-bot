@@ -76,85 +76,114 @@ class AgentOrchestrator:
                 Ticket.status == TicketStatus.TODO
             ).limit(3).all()
             
-            for ticket in todo_tickets:
-                try:
-                    await self.process_ticket_pipeline(ticket)
-                except Exception as e:
-                    logger.error(f"Error processing ticket {ticket.id}: {e}")
+            # Get ticket IDs to avoid session conflicts
+            ticket_ids = [ticket.id for ticket in todo_tickets]
+            
+        # Process each ticket using its ID
+        for ticket_id in ticket_ids:
+            try:
+                await self.process_ticket_pipeline(ticket_id)
+            except Exception as e:
+                logger.error(f"Error processing ticket {ticket_id}: {e}")
 
-    async def process_ticket_pipeline(self, ticket: Ticket):
+    async def process_ticket_pipeline(self, ticket_id: int):
         """Process a single ticket through the complete agent pipeline"""
-        logger.info(f"Processing ticket {ticket.id} through pipeline")
+        logger.info(f"Processing ticket {ticket_id} through pipeline")
         
         # Update ticket status to in progress and update Jira
+        jira_id = None
         with next(get_sync_db()) as db:
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+            if not ticket:
+                logger.error(f"Ticket {ticket_id} not found")
+                return
+                
             ticket.status = TicketStatus.IN_PROGRESS
+            jira_id = ticket.jira_id
             db.add(ticket)
             db.commit()
         
         # Update Jira status to "In Progress"
-        await self._update_jira_status(ticket.jira_id, "In Progress", 
+        await self._update_jira_status(jira_id, "In Progress", 
                                      f"AI Agent system has started processing this ticket.")
         
         try:
-            # Step 1: Planner agent analyzes the ticket
-            logger.info(f"Ticket {ticket.id}: Running planner agent")
-            planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket)
-            
-            # Step 2: Developer agent generates patches
-            logger.info(f"Ticket {ticket.id}: Running developer agent")
-            developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket)
-            
-            # Step 3: QA agent tests patches
-            logger.info(f"Ticket {ticket.id}: Running QA agent")
-            qa_result = await self.agents[AgentType.QA].execute_with_retry(ticket)
+            # Get fresh ticket object for processing
+            with next(get_sync_db()) as db:
+                ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                if not ticket:
+                    logger.error(f"Ticket {ticket_id} not found during processing")
+                    return
+                
+                # Step 1: Planner agent analyzes the ticket
+                logger.info(f"Ticket {ticket_id}: Running planner agent")
+                planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket)
+                
+                # Step 2: Developer agent generates patches
+                logger.info(f"Ticket {ticket_id}: Running developer agent")
+                developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket)
+                
+                # Step 3: QA agent tests patches
+                logger.info(f"Ticket {ticket_id}: Running QA agent")
+                qa_result = await self.agents[AgentType.QA].execute_with_retry(ticket)
             
             # Step 4: If QA passes, communicator creates PR
             if qa_result.get("ready_for_deployment"):
-                logger.info(f"Ticket {ticket.id}: Running communicator agent")
-                comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(ticket)
+                # Get fresh ticket object for communicator
+                with next(get_sync_db()) as db:
+                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                    if ticket:
+                        logger.info(f"Ticket {ticket_id}: Running communicator agent")
+                        comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(ticket)
                 
                 # Update ticket status to in review
                 with next(get_sync_db()) as db:
-                    ticket.status = TicketStatus.IN_REVIEW
-                    db.add(ticket)
-                    db.commit()
+                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                    if ticket:
+                        ticket.status = TicketStatus.IN_REVIEW
+                        db.add(ticket)
+                        db.commit()
                 
                 # Update Jira status to "Needs Review" for human code review
-                await self._update_jira_status(ticket.jira_id, "Needs Review", 
+                await self._update_jira_status(jira_id, "Needs Review", 
                                              f"AI Agent has completed processing and created a pull request. Please review the changes.")
                     
-                logger.info(f"Ticket {ticket.id}: Pipeline completed successfully - PR created")
+                logger.info(f"Ticket {ticket_id}: Pipeline completed successfully - PR created")
             else:
                 # QA failed, mark as failed and update Jira
                 with next(get_sync_db()) as db:
-                    ticket.status = TicketStatus.FAILED
-                    db.add(ticket)
-                    db.commit()
+                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                    if ticket:
+                        ticket.status = TicketStatus.FAILED
+                        db.add(ticket)
+                        db.commit()
                 
                 # Update Jira status to "Needs Review" for human intervention
-                await self._update_jira_status(ticket.jira_id, "Needs Review", 
+                await self._update_jira_status(jira_id, "Needs Review", 
                                              f"AI Agent was unable to successfully process this ticket. QA testing failed. Human intervention required.")
                 
-                logger.warning(f"Ticket {ticket.id}: QA testing failed")
+                logger.warning(f"Ticket {ticket_id}: QA testing failed")
             
         except Exception as e:
             # Mark ticket as failed and update Jira
             with next(get_sync_db()) as db:
-                ticket.status = TicketStatus.FAILED
-                ticket.retry_count += 1
-                db.add(ticket)
-                db.commit()
-            
-            # Check if we've exceeded max retries
-            if ticket.retry_count >= config.agent_max_retries:
-                # Update Jira status to "Needs Review" after max retries
-                await self._update_jira_status(ticket.jira_id, "Needs Review", 
-                                             f"AI Agent failed to process this ticket after {config.agent_max_retries} attempts. Human intervention required. Error: {str(e)}")
-                logger.error(f"Ticket {ticket.id} failed after {config.agent_max_retries} retries: {e}")
-            else:
-                # Will retry, keep ticket status as failed for now
-                logger.error(f"Ticket {ticket.id} failed (attempt {ticket.retry_count}): {e}")
+                ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                if ticket:
+                    ticket.status = TicketStatus.FAILED
+                    ticket.retry_count += 1
+                    current_retry_count = ticket.retry_count
+                    db.add(ticket)
+                    db.commit()
+                    
+                    # Check if we've exceeded max retries
+                    if current_retry_count >= config.agent_max_retries:
+                        # Update Jira status to "Needs Review" after max retries
+                        await self._update_jira_status(jira_id, "Needs Review", 
+                                                     f"AI Agent failed to process this ticket after {config.agent_max_retries} attempts. Human intervention required. Error: {str(e)}")
+                        logger.error(f"Ticket {ticket_id} failed after {config.agent_max_retries} retries: {e}")
+                    else:
+                        # Will retry, keep ticket status as failed for now
+                        logger.error(f"Ticket {ticket_id} failed (attempt {current_retry_count}): {e}")
             
             raise e
 
@@ -195,4 +224,3 @@ class AgentOrchestrator:
             "intake_polling": self.running and bool(config.jira_base_url and config.jira_api_token),
             "jira_status_management": "enabled"
         }
-
