@@ -93,9 +93,11 @@ class Config:
         if statuses:
             jql += f" AND status IN ('{statuses}')"
         
-        jql += f" AND created >= -{self.jira_poll_hours}h"
+        # Removed time constraint - will search for ALL tickets with the specified status
         
         return jql
+    
+    # ... keep existing code (validate_required_config and to_dict methods)
     
     def validate_required_config(self) -> List[str]:
         """Validate that required configuration is present"""
