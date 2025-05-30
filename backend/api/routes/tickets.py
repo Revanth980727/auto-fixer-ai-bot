@@ -25,11 +25,22 @@ class TicketResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class PatchResponse(BaseModel):
+    id: int
+    patch_content: str
+    patched_code: str
+    test_code: str
+    commit_message: str
+    confidence_score: float
+    success: bool
+    created_at: datetime
+    target_file: Optional[str] = None
+
 class TicketDetailResponse(TicketResponse):
     error_trace: Optional[str]
     estimated_files: Optional[dict]
     executions: List[dict]
-    patches: List[dict]
+    patches: List[PatchResponse]
 
 @router.get("/", response_model=List[TicketResponse])
 async def get_tickets(
@@ -72,13 +83,17 @@ async def get_ticket(ticket_id: int, db: Session = Depends(get_sync_db)):
             "logs": ex.logs,
             "error_message": ex.error_message
         } for ex in executions],
-        patches=[{
-            "id": p.id,
-            "confidence_score": p.confidence_score,
-            "success": p.success,
-            "commit_message": p.commit_message,
-            "created_at": p.created_at
-        } for p in patches]
+        patches=[PatchResponse(
+            id=p.id,
+            patch_content=p.patch_content or "",
+            patched_code=p.patched_code or "",
+            test_code=p.test_code or "",
+            commit_message=p.commit_message or "",
+            confidence_score=p.confidence_score or 0.0,
+            success=p.success or False,
+            created_at=p.created_at,
+            target_file=getattr(p, 'target_file', None)
+        ) for p in patches]
     )
 
 @router.post("/{ticket_id}/retry")

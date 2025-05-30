@@ -8,8 +8,10 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { RotateCcw, AlertTriangle, Eye, Filter } from 'lucide-react';
 import { toast } from '@/hooks/use-toast';
+import { PatchDiffViewer } from './PatchDiffViewer';
 
 interface Ticket {
   id: number;
@@ -259,33 +261,49 @@ export const TicketTable = () => {
                               <Eye className="w-4 h-4" />
                             </Button>
                           </DialogTrigger>
-                          <DialogContent className="max-w-4xl max-h-[80vh] overflow-y-auto">
+                          <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
                             <DialogHeader>
                               <DialogTitle>{ticket.title}</DialogTitle>
                               <DialogDescription>
                                 {ticket.jira_id} • Created {new Date(ticket.created_at).toLocaleString()}
                               </DialogDescription>
                             </DialogHeader>
-                            <div className="space-y-4">
-                              <div>
-                                <h4 className="font-semibold mb-2">Description</h4>
-                                <p className="text-sm text-muted-foreground whitespace-pre-wrap">
-                                  {ticketDetail?.description || ticket.description}
-                                </p>
-                              </div>
+                            
+                            <Tabs defaultValue="overview" className="w-full">
+                              <TabsList className="grid w-full grid-cols-3">
+                                <TabsTrigger value="overview">Overview</TabsTrigger>
+                                <TabsTrigger value="patches">Patches</TabsTrigger>
+                                <TabsTrigger value="executions">Executions</TabsTrigger>
+                              </TabsList>
                               
-                              {ticketDetail?.error_trace && (
+                              <TabsContent value="overview" className="space-y-4">
                                 <div>
-                                  <h4 className="font-semibold mb-2">Error Trace</h4>
-                                  <pre className="text-xs bg-muted p-4 rounded-lg overflow-x-auto">
-                                    {ticketDetail.error_trace}
-                                  </pre>
+                                  <h4 className="font-semibold mb-2">Description</h4>
+                                  <p className="text-sm text-muted-foreground whitespace-pre-wrap">
+                                    {ticketDetail?.description || ticket.description}
+                                  </p>
                                 </div>
-                              )}
+                                
+                                {ticketDetail?.error_trace && (
+                                  <div>
+                                    <h4 className="font-semibold mb-2">Error Trace</h4>
+                                    <pre className="text-xs bg-muted p-4 rounded-lg overflow-x-auto">
+                                      {ticketDetail.error_trace}
+                                    </pre>
+                                  </div>
+                                )}
+                              </TabsContent>
                               
-                              {ticketDetail?.executions && ticketDetail.executions.length > 0 && (
-                                <div>
-                                  <h4 className="font-semibold mb-2">Agent Executions</h4>
+                              <TabsContent value="patches">
+                                {ticketDetail?.patches ? (
+                                  <PatchDiffViewer patches={ticketDetail.patches} />
+                                ) : (
+                                  <p className="text-muted-foreground">Loading patches...</p>
+                                )}
+                              </TabsContent>
+                              
+                              <TabsContent value="executions" className="space-y-4">
+                                {ticketDetail?.executions && ticketDetail.executions.length > 0 ? (
                                   <div className="space-y-2">
                                     {ticketDetail.executions.map((execution: any) => (
                                       <div key={execution.id} className="border rounded p-3">
@@ -303,9 +321,11 @@ export const TicketTable = () => {
                                       </div>
                                     ))}
                                   </div>
-                                </div>
-                              )}
-                            </div>
+                                ) : (
+                                  <p className="text-muted-foreground">No executions found.</p>
+                                )}
+                              </TabsContent>
+                            </Tabs>
                           </DialogContent>
                         </Dialog>
                         
