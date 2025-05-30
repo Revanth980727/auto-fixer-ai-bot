@@ -1,4 +1,3 @@
-
 import asyncio
 from typing import Dict, Any, List
 from core.models import Ticket, TicketStatus, AgentType
@@ -66,7 +65,8 @@ class AgentOrchestrator:
         """Background loop for intake polling"""
         while self.running:
             try:
-                await self.agents[AgentType.INTAKE].poll_tickets()
+                # Fix: Use the correct method name from IntakeAgent
+                await self.agents[AgentType.INTAKE].poll_and_create_tickets()
                 await asyncio.sleep(self.intake_interval)
             except Exception as e:
                 logger.error(f"Error in intake polling: {e}")
@@ -420,10 +420,14 @@ main();
         logger.info(f"Ticket {ticket_id} reset for retry")
 
     async def _update_jira_status(self, jira_id: str, status: str, comment: str):
-        """Update JIRA ticket status and add comment"""
+        """Update JIRA ticket status and add comment using the correct method"""
         try:
-            await self.jira_client.add_comment(jira_id, comment)
-            logger.info(f"Updated Jira ticket {jira_id} to status '{status}'")
+            # Fix: Use the correct method from JIRAClient which supports comments
+            success = await self.jira_client.update_ticket_status(jira_id, status, comment)
+            if success:
+                logger.info(f"Updated Jira ticket {jira_id} to status '{status}'")
+            else:
+                logger.warning(f"Failed to update Jira ticket {jira_id} status")
         except Exception as e:
             logger.error(f"Failed to update Jira ticket {jira_id}: {e}")
 
