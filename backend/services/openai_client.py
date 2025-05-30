@@ -8,8 +8,12 @@ logger = logging.getLogger(__name__)
 
 class OpenAIClient:
     def __init__(self):
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            logger.warning("OpenAI API key not found. Client will not function properly.")
+        
         self.client = openai.AsyncOpenAI(
-            api_key=os.getenv("OPENAI_API_KEY")
+            api_key=api_key
         )
     
     async def complete_chat(self, messages: List[Dict[str, str]], model: str = "gpt-4o") -> str:
