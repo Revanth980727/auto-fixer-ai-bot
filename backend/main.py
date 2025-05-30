@@ -9,6 +9,11 @@ from core.database import init_db
 from services.ticket_poller import TicketPoller
 from services.agent_orchestrator import AgentOrchestrator
 from core.websocket_manager import ConnectionManager
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Global instances
 connection_manager = ConnectionManager()
@@ -18,23 +23,41 @@ agent_orchestrator = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
+    logger.info("=== APPLICATION STARTUP ===")
     await init_db()
+    logger.info("Database initialized")
     
     global ticket_poller, agent_orchestrator
+    logger.info("Creating TicketPoller instance...")
     ticket_poller = TicketPoller()
+    logger.info("TicketPoller created successfully")
+    
+    logger.info("Creating AgentOrchestrator instance...")
     agent_orchestrator = AgentOrchestrator()
+    logger.info("AgentOrchestrator created successfully")
     
     # Start background tasks
-    asyncio.create_task(ticket_poller.start_polling())
-    asyncio.create_task(agent_orchestrator.start_processing())
+    logger.info("Starting ticket polling task...")
+    polling_task = asyncio.create_task(ticket_poller.start_polling())
+    logger.info(f"Ticket polling task created: {polling_task}")
+    
+    logger.info("Starting agent orchestrator task...")
+    orchestrator_task = asyncio.create_task(agent_orchestrator.start_processing())
+    logger.info(f"Agent orchestrator task created: {orchestrator_task}")
+    
+    logger.info("=== APPLICATION STARTUP COMPLETE ===")
     
     yield
     
     # Shutdown
+    logger.info("=== APPLICATION SHUTDOWN ===")
     if ticket_poller:
+        logger.info("Stopping ticket poller...")
         await ticket_poller.stop_polling()
     if agent_orchestrator:
+        logger.info("Stopping agent orchestrator...")
         await agent_orchestrator.stop_processing()
+    logger.info("=== APPLICATION SHUTDOWN COMPLETE ===")
 
 app = FastAPI(
     title="AI Agent System",

@@ -10,7 +10,9 @@ class Config:
     """Configuration management for the AI Agent System"""
     
     def __init__(self):
+        logger.info("=== LOADING CONFIGURATION ===")
         self.load_config()
+        logger.info("=== CONFIGURATION LOADED ===")
     
     def load_config(self):
         """Load configuration from environment variables"""
@@ -24,6 +26,14 @@ class Config:
         self.github_repo_owner = os.getenv("GITHUB_REPO_OWNER")
         self.github_repo_name = os.getenv("GITHUB_REPO_NAME")
         
+        # Debug logging for critical values
+        logger.info(f"Config loaded - JIRA_BASE_URL: {self.jira_base_url}")
+        logger.info(f"Config loaded - JIRA_PROJECT_KEY: {self.jira_project_key}")
+        logger.info(f"Config loaded - JIRA_USERNAME: {self.jira_username}")
+        logger.info(f"Config loaded - JIRA_API_TOKEN present: {'Yes' if self.jira_api_token else 'No'}")
+        if self.jira_api_token:
+            logger.info(f"Config loaded - JIRA_API_TOKEN length: {len(self.jira_api_token)}")
+        
         # JIRA Configuration
         self.jira_issue_types = self._parse_list(os.getenv("JIRA_ISSUE_TYPES", "Bug"))
         self.jira_statuses = self._parse_list(os.getenv("JIRA_STATUSES", "To Do,Open,New"))
@@ -36,6 +46,8 @@ class Config:
         self.agent_process_interval = int(os.getenv("AGENT_PROCESS_INTERVAL", "10"))
         self.agent_intake_interval = int(os.getenv("AGENT_INTAKE_INTERVAL", "60"))
         self.agent_poll_interval = int(os.getenv("AGENT_POLL_INTERVAL", "60"))
+        
+        logger.info(f"Config loaded - AGENT_POLL_INTERVAL: {self.agent_poll_interval}")
         
         # Priority Scoring Configuration
         self.priority_weights = {
@@ -57,6 +69,10 @@ class Config:
         
         # Urgent keywords for priority calculation
         self.urgent_keywords = self._parse_list(os.getenv("URGENT_KEYWORDS", "crash,critical,urgent,blocking,outage,down"))
+        
+        # Log the generated JQL for debugging
+        jql = self.get_jira_jql()
+        logger.info(f"Generated JQL query: {jql}")
     
     def _parse_list(self, value: str) -> List[str]:
         """Parse comma-separated string into list"""
