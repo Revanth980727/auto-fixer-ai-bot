@@ -10,6 +10,7 @@ from agents.developer_agent import DeveloperAgent
 from agents.qa_agent import QAAgent
 from agents.communicator_agent import CommunicatorAgent
 from services.jira_client import JIRAClient
+from services.github_client import GitHubClient
 import logging
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ class AgentOrchestrator:
             AgentType.COMMUNICATOR: CommunicatorAgent(),
         }
         self.jira_client = JIRAClient()
+        self.github_client = GitHubClient()
         # Use configured intervals
         self.process_interval = config.agent_process_interval
         self.intake_interval = config.agent_intake_interval
@@ -50,23 +52,7 @@ class AgentOrchestrator:
                 logger.error(f"Error in agent orchestrator: {e}")
                 await asyncio.sleep(5)
 
-    async def stop_processing(self):
-        """Stop processing"""
-        self.running = False
-        logger.info("Stopping agent orchestrator...")
-
-    async def _intake_polling_loop(self):
-        """Separate loop for intake agent to poll JIRA"""
-        while self.running:
-            try:
-                if config.jira_base_url and config.jira_api_token:
-                    await self.agents[AgentType.INTAKE].poll_and_create_tickets()
-                else:
-                    logger.debug("JIRA not configured, skipping intake polling")
-                await asyncio.sleep(self.intake_interval)
-            except Exception as e:
-                logger.error(f"Error in intake polling: {e}")
-                await asyncio.sleep(30)
+    # ... keep existing code (stop_processing and _intake_polling_loop methods)
 
     async def process_pending_tickets(self):
         """Process tickets that are ready for agent processing"""
@@ -87,7 +73,7 @@ class AgentOrchestrator:
                 logger.error(f"Error processing ticket {ticket_id}: {e}")
 
     async def process_ticket_pipeline(self, ticket_id: int):
-        """Process a single ticket through the complete agent pipeline"""
+        """Process a single ticket through the complete agent pipeline with proper validation"""
         logger.info(f"Processing ticket {ticket_id} through pipeline")
         
         # Update ticket status to in progress and update Jira
@@ -119,26 +105,38 @@ class AgentOrchestrator:
                     logger.error(f"Ticket {ticket_id} not found during processing")
                     return
                 
-                # Step 1: Planner agent analyzes the ticket
+                # Step 1: Planner agent analyzes the ticket with repository context
                 logger.info(f"Ticket {ticket_id}: Running planner agent")
-                planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket)
+                planner_context = await self._prepare_planner_context(ticket)
+                planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket, planner_context)
                 
-                # Step 2: Developer agent generates patches
+                # Validate planner results
+                if not self._validate_planner_results(planner_result):
+                    raise Exception("Planner agent failed to identify target files or root cause")
+                
+                # Step 2: Developer agent generates patches with code context
                 logger.info(f"Ticket {ticket_id}: Running developer agent")
-                developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket)
+                developer_context = await self._prepare_developer_context(ticket, planner_result)
+                developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket, developer_context)
                 
-                # Step 3: QA agent tests patches
+                # Validate developer results
+                if not self._validate_developer_results(developer_result):
+                    raise Exception("Developer agent failed to generate valid patches")
+                
+                # Step 3: QA agent tests patches in proper environment
                 logger.info(f"Ticket {ticket_id}: Running QA agent")
-                qa_result = await self.agents[AgentType.QA].execute_with_retry(ticket)
+                qa_context = await self._prepare_qa_context(ticket, developer_result)
+                qa_result = await self.agents[AgentType.QA].execute_with_retry(ticket, qa_context)
             
             # Step 4: If QA passes, communicator creates PR and mark as COMPLETED
-            if qa_result.get("ready_for_deployment"):
+            if qa_result.get("ready_for_deployment") and qa_result.get("successful_patches", 0) > 0:
                 # Get fresh ticket object for communicator
                 with next(get_sync_db()) as db:
                     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
                     if ticket:
                         logger.info(f"Ticket {ticket_id}: Running communicator agent")
-                        comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(ticket)
+                        comm_context = await self._prepare_communicator_context(ticket, qa_result)
+                        comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(ticket, comm_context)
                 
                 # Update ticket status to COMPLETED (successful completion)
                 with next(get_sync_db()) as db:
@@ -154,7 +152,7 @@ class AgentOrchestrator:
                     
                 logger.info(f"Ticket {ticket_id}: Pipeline completed successfully - PR created and ticket marked as COMPLETED")
             else:
-                # QA failed, mark as IN_REVIEW for human intervention
+                # QA failed or no successful patches, mark as IN_REVIEW for human intervention
                 with next(get_sync_db()) as db:
                     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
                     if ticket:
@@ -163,10 +161,11 @@ class AgentOrchestrator:
                         db.commit()
                 
                 # Update Jira status to "Needs Review" for human intervention
+                qa_message = "QA testing failed - no patches passed validation." if qa_result.get("successful_patches", 0) == 0 else "QA testing completed but patches were not ready for deployment."
                 await self._update_jira_status(jira_id, "Needs Review", 
-                                             f"AI Agent was unable to successfully process this ticket. QA testing failed. Human intervention required.")
+                                             f"AI Agent processed this ticket but requires human review. {qa_message}")
                 
-                logger.warning(f"Ticket {ticket_id}: QA testing failed - marked as IN_REVIEW")
+                logger.warning(f"Ticket {ticket_id}: {qa_message} - marked as IN_REVIEW")
             
         except Exception as e:
             # Mark ticket as failed and update Jira
@@ -195,40 +194,114 @@ class AgentOrchestrator:
             
             raise e
 
-    async def retry_failed_ticket(self, ticket_id: int):
-        """Retry a failed ticket"""
-        with next(get_sync_db()) as db:
-            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-            if ticket and ticket.retry_count < config.agent_max_retries:
-                ticket.status = TicketStatus.TODO
-                ticket.retry_count += 1
-                db.add(ticket)
-                db.commit()
-                logger.info(f"Ticket {ticket_id} queued for retry (attempt {ticket.retry_count})")
-            else:
-                logger.warning(f"Ticket {ticket_id} cannot be retried - max retries exceeded")
-
-    async def _update_jira_status(self, jira_id: str, status: str, comment: str = ""):
-        """Update Jira ticket status with error handling"""
-        try:
-            success = await self.jira_client.update_ticket_status(jira_id, status, comment)
-            if success:
-                logger.info(f"Updated Jira ticket {jira_id} to status '{status}'")
-            else:
-                logger.warning(f"Failed to update Jira ticket {jira_id} to status '{status}'")
-        except Exception as e:
-            logger.error(f"Error updating Jira ticket {jira_id} status: {e}")
-
-    async def get_agent_status(self) -> Dict[str, Any]:
-        """Get status of all agents with configuration details"""
-        return {
-            "orchestrator_running": self.running,
-            "configuration": config.to_dict(),
-            "intervals": {
-                "process": self.process_interval,
-                "intake": self.intake_interval
-            },
-            "agents_available": [agent_type.value for agent_type in self.agents.keys()],
-            "intake_polling": self.running and bool(config.jira_base_url and config.jira_api_token),
-            "jira_status_management": "enabled"
+    async def _prepare_planner_context(self, ticket: Ticket) -> Dict[str, Any]:
+        """Prepare context for planner agent including repository information"""
+        context = {
+            "ticket": ticket,
+            "repository_files": [],
+            "error_trace_files": []
         }
+        
+        # Extract file paths from error trace
+        if ticket.error_trace:
+            import re
+            file_matches = re.findall(r'File "([^"]+)"', ticket.error_trace)
+            for file_path in file_matches:
+                try:
+                    file_content = await self.github_client.get_file_content(file_path)
+                    if file_content:
+                        context["error_trace_files"].append({
+                            "path": file_path,
+                            "content": file_content
+                        })
+                except Exception as e:
+                    logger.warning(f"Could not fetch file {file_path}: {e}")
+        
+        return context
+
+    async def _prepare_developer_context(self, ticket: Ticket, planner_result: Dict) -> Dict[str, Any]:
+        """Prepare context for developer agent including source code"""
+        context = {
+            "ticket": ticket,
+            "planner_analysis": planner_result,
+            "source_files": []
+        }
+        
+        # Fetch source code for files identified by planner
+        for file_info in planner_result.get("likely_files", []):
+            try:
+                file_path = file_info.get("path")
+                if file_path:
+                    file_content = await self.github_client.get_file_content(file_path)
+                    if file_content:
+                        context["source_files"].append({
+                            "path": file_path,
+                            "content": file_content,
+                            "confidence": file_info.get("confidence", 0.5),
+                            "reason": file_info.get("reason", "")
+                        })
+            except Exception as e:
+                logger.warning(f"Could not fetch source file {file_info.get('path')}: {e}")
+        
+        return context
+
+    async def _prepare_qa_context(self, ticket: Ticket, developer_result: Dict) -> Dict[str, Any]:
+        """Prepare context for QA agent including patches and test environment"""
+        return {
+            "ticket": ticket,
+            "patches": developer_result.get("patches", []),
+            "repository_ready": bool(self.github_client._is_configured())
+        }
+
+    async def _prepare_communicator_context(self, ticket: Ticket, qa_result: Dict) -> Dict[str, Any]:
+        """Prepare context for communicator agent"""
+        return {
+            "ticket": ticket,
+            "qa_results": qa_result,
+            "successful_patches": qa_result.get("test_results", [])
+        }
+
+    def _validate_planner_results(self, result: Dict) -> bool:
+        """Validate that planner agent produced meaningful results"""
+        if not result:
+            return False
+        
+        # Check for required fields
+        required_fields = ["root_cause", "likely_files"]
+        for field in required_fields:
+            if field not in result:
+                return False
+        
+        # Check that we have at least one likely file
+        likely_files = result.get("likely_files", [])
+        if not likely_files or len(likely_files) == 0:
+            return False
+        
+        # Check that files have required structure
+        for file_info in likely_files:
+            if not isinstance(file_info, dict) or "path" not in file_info:
+                return False
+        
+        return True
+
+    def _validate_developer_results(self, result: Dict) -> bool:
+        """Validate that developer agent generated actual patches"""
+        if not result:
+            return False
+        
+        patches = result.get("patches", [])
+        if not patches or len(patches) == 0:
+            return False
+        
+        # Check that patches have required content
+        for patch in patches:
+            if not isinstance(patch, dict):
+                return False
+            required_fields = ["patch_content", "patched_code", "target_file"]
+            for field in required_fields:
+                if field not in patch or not patch[field]:
+                    return False
+        
+        return True
+
+    # ... keep existing code (retry_failed_ticket, _update_jira_status, get_agent_status methods)

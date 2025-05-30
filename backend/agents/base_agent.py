@@ -1,4 +1,3 @@
-
 from abc import ABC, abstractmethod
 from typing import Dict, Any, Optional
 from core.models import Ticket, AgentExecution, AgentType
@@ -7,6 +6,7 @@ from core.config import config
 from datetime import datetime
 import logging
 import json
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ class BaseAgent(ABC):
         self.max_retries = config.agent_max_retries
         
     @abstractmethod
-    async def process(self, ticket: Ticket, execution_id: int) -> Dict[str, Any]:
+    async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Process a ticket and return results"""
         pass
     
@@ -72,15 +72,26 @@ class BaseAgent(ABC):
             db.add(execution)
             db.commit()
             
-    async def execute_with_retry(self, ticket: Ticket) -> Dict[str, Any]:
-        """Execute agent with retry logic"""
+    async def execute_with_retry(self, ticket: Ticket, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Execute agent with retry logic and context"""
         execution_id = self.create_execution(ticket)
+        
+        # Add minimum processing delay to prevent rushing
+        await asyncio.sleep(2)
         
         for attempt in range(self.max_retries + 1):
             try:
                 self.log_execution(execution_id, f"Starting attempt {attempt + 1}/{self.max_retries + 1}")
                 
-                result = await self.process(ticket, execution_id)
+                # Validate context if provided
+                if context and not self._validate_context(context):
+                    raise Exception(f"{self.agent_type.value} agent received invalid context")
+                
+                result = await self.process(ticket, execution_id, context)
+                
+                # Validate result before marking as complete
+                if not self._validate_result(result):
+                    raise Exception(f"{self.agent_type.value} agent produced invalid result")
                 
                 self.update_execution(execution_id, "completed", output_data=result)
                 self.log_execution(execution_id, "Completed successfully")
@@ -112,4 +123,15 @@ class BaseAgent(ABC):
                         db.add(execution)
                         db.commit()
                 
+                # Add delay between retries
+                await asyncio.sleep(5)
+                
         return {}
+
+    def _validate_context(self, context: Dict[str, Any]) -> bool:
+        """Validate context for this agent type - override in subclasses"""
+        return True
+
+    def _validate_result(self, result: Dict[str, Any]) -> bool:
+        """Validate result from this agent - override in subclasses"""
+        return bool(result)
