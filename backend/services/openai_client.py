@@ -1,6 +1,6 @@
 
 import openai
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import os
 import logging
 
@@ -8,16 +8,31 @@ logger = logging.getLogger(__name__)
 
 class OpenAIClient:
     def __init__(self):
+        self.client: Optional[openai.AsyncOpenAI] = None
+        self._initialize_client()
+    
+    def _initialize_client(self):
+        """Initialize OpenAI client with error handling"""
         api_key = os.getenv("OPENAI_API_KEY")
         if not api_key:
             logger.warning("OpenAI API key not found. Client will not function properly.")
+            return
         
-        self.client = openai.AsyncOpenAI(
-            api_key=api_key
-        )
+        try:
+            self.client = openai.AsyncOpenAI(
+                api_key=api_key,
+                timeout=30.0
+            )
+            logger.info("OpenAI client initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI client: {e}")
+            self.client = None
     
     async def complete_chat(self, messages: List[Dict[str, str]], model: str = "gpt-4o") -> str:
         """Complete a chat conversation using GPT-4"""
+        if not self.client:
+            raise RuntimeError("OpenAI client not initialized. Check API key and dependencies.")
+        
         try:
             response = await self.client.chat.completions.create(
                 model=model,
@@ -34,6 +49,9 @@ class OpenAIClient:
     
     async def analyze_code_error(self, error_trace: str, code_context: str = "") -> str:
         """Analyze code error and suggest fixes"""
+        if not self.client:
+            return '{"error": "OpenAI client not available", "suggestion": "Check API configuration"}'
+        
         messages = [
             {
                 "role": "system",
@@ -49,6 +67,9 @@ class OpenAIClient:
     
     async def generate_code_patch(self, analysis: str, file_content: str, error_description: str) -> str:
         """Generate code patch based on analysis"""
+        if not self.client:
+            return '{"error": "OpenAI client not available", "patch_content": "", "explanation": "API not configured"}'
+        
         messages = [
             {
                 "role": "system",
