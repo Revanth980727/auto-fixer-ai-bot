@@ -185,38 +185,50 @@ Focus on actual code issues you can see in the provided source files.
                     if similar_file:
                         files.append({"path": similar_file, "confidence": 0.6, "reason": f"Similar to error trace file {file_match}"})
         
-        # If no files from error trace, use some of the discovered files intelligently
+        # If no files from error trace, use repository-aware intelligent selection
         if not files and discovered_files:
-            # Prioritize Python files, main files, or files with common patterns
-            priority_patterns = ["main", "app", "server", "index", "__init__"]
+            # Prioritize based on actual file analysis instead of hardcoded patterns
+            code_files = []
+            config_files = []
             
-            for pattern in priority_patterns:
-                for file_info in discovered_files[:10]:  # Limit search
-                    file_path = file_info.get("path", "") if isinstance(file_info, dict) else str(file_info)
-                    if pattern in file_path.lower() and file_path.endswith(('.py', '.js', '.ts')):
-                        files.append({
-                            "path": file_path, 
-                            "confidence": 0.4, 
-                            "reason": f"Common application file pattern: {pattern}"
-                        })
-                        break
-                if files:  # Found at least one file
-                    break
+            for file_info in discovered_files:
+                file_path = file_info.get("path", "") if isinstance(file_info, dict) else str(file_info)
+                file_path_lower = file_path.lower()
+                
+                # Categorize actual files by type and importance
+                if file_path_lower.endswith(('.py', '.js', '.ts', '.tsx', '.jsx')):
+                    # Check for common application patterns in actual files
+                    if any(pattern in file_path_lower for pattern in ['main', 'app', 'server', 'index', '__init__']):
+                        code_files.insert(0, file_info)  # High priority
+                    else:
+                        code_files.append(file_info)
+                elif file_path_lower.endswith(('.json', '.yaml', '.yml', '.env')):
+                    config_files.append(file_info)
             
-            # If still no files, use the first few discovered files as last resort
-            if not files:
-                for file_info in discovered_files[:2]:
-                    file_path = file_info.get("path", "") if isinstance(file_info, dict) else str(file_info)
-                    if file_path.endswith(('.py', '.js', '.ts')):
-                        files.append({
-                            "path": file_path,
-                            "confidence": 0.3,
-                            "reason": "Repository file (fallback selection)"
-                        })
+            # Select most relevant files based on actual repository content
+            selected_files = code_files[:2] + config_files[:1]  # Top 2 code + 1 config
+            
+            for file_info in selected_files:
+                file_path = file_info.get("path", "") if isinstance(file_info, dict) else str(file_info)
+                files.append({
+                    "path": file_path,
+                    "confidence": 0.4,
+                    "reason": "Repository analysis - relevant file type"
+                })
         
-        # Final fallback if absolutely no files can be identified
+        # Use first available file from repository if nothing else works
+        if not files and discovered_files:
+            first_file = discovered_files[0]
+            file_path = first_file.get("path", "") if isinstance(first_file, dict) else str(first_file)
+            files = [{
+                "path": file_path,
+                "confidence": 0.2,
+                "reason": "First available file in repository"
+            }]
+        
+        # Only use unknown_file if absolutely no repository files exist
         if not files:
-            files = [{"path": "unknown_file", "confidence": 0.1, "reason": "No valid files identified in repository"}]
+            files = [{"path": "unknown_file", "confidence": 0.1, "reason": "No repository files discovered"}]
         
         return {
             "root_cause": "Unable to determine with high confidence - requires manual code review",
@@ -224,9 +236,9 @@ Focus on actual code issues you can see in the provided source files.
             "likely_files": files,
             "affected_functions": [],
             "complexity_estimate": "medium",
-            "suggested_approach": "Manual investigation required - check discovered repository files",
+            "suggested_approach": "Repository-aware investigation - check actual discovered files",
             "required_tests": [],
-            "code_analysis": f"Intelligent analysis of {len(discovered_files)} discovered repository files"
+            "code_analysis": f"Repository-aware analysis of {len(discovered_files)} discovered files"
         }
 
     def _validate_context(self, context: Dict[str, Any]) -> bool:
