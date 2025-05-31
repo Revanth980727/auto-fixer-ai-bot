@@ -3,9 +3,12 @@ from agents.base_agent import BaseAgent
 from core.models import Ticket, AgentExecution, AgentType, PatchAttempt
 from core.database import get_sync_db
 from services.patch_service import PatchService
-from typing import Dict, Any, Optional
+from services.metrics_collector import metrics_collector
+from services.pipeline_context import context_manager, PipelineStage
+from typing import Dict, Any, Optional, List
 import logging
 import asyncio
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -15,75 +18,120 @@ class QAAgent(BaseAgent):
         self.patch_service = PatchService()
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Test patches using intelligent patch application system"""
-        self.log_execution(execution_id, "Starting intelligent QA testing process")
+        """Test patches using intelligent patch application system with enhanced monitoring"""
+        start_time = time.time()
         
-        if not context:
-            self.log_execution(execution_id, "No context provided for QA testing")
-            return {"status": "no_context", "patches_tested": 0, "successful_patches": 0, "ready_for_deployment": False}
-        
-        # Get patches to test
-        patches = context.get("patches", [])
-        
-        if not patches:
-            self.log_execution(execution_id, "No patches found for testing")
-            return {"status": "no_patches", "patches_tested": 0, "successful_patches": 0, "ready_for_deployment": False}
-        
-        # Add processing delay for realistic timing
-        await asyncio.sleep(5)
-        
-        # Create test branch for intelligent patch application
         try:
-            test_branch = await self.patch_service.create_smart_branch("main", ticket.id)
-            self.log_execution(execution_id, f"Created test branch: {test_branch}")
+            self.log_execution(execution_id, "Starting intelligent QA testing process with enhanced monitoring")
+            
+            # Get or create pipeline context
+            pipeline_context = context_manager.get_context(ticket.id)
+            if pipeline_context:
+                context_manager.create_checkpoint(pipeline_context.context_id, "qa_start")
+            
+            if not context:
+                self.log_execution(execution_id, "No context provided for QA testing")
+                result = {"status": "no_context", "patches_tested": 0, "successful_patches": 0, "ready_for_deployment": False}
+                metrics_collector.record_agent_execution("qa", time.time() - start_time, False, ticket.id)
+                return result
+            
+            # Get patches to test
+            patches = context.get("patches", [])
+            
+            if not patches:
+                self.log_execution(execution_id, "No patches found for testing")
+                result = {"status": "no_patches", "patches_tested": 0, "successful_patches": 0, "ready_for_deployment": False}
+                metrics_collector.record_agent_execution("qa", time.time() - start_time, False, ticket.id)
+                return result
+            
+            # Add processing delay for realistic timing
+            await asyncio.sleep(5)
+            
+            # Use circuit breaker for GitHub operations
+            github_breaker = metrics_collector.get_circuit_breaker("github")
+            
+            try:
+                # Create test branch for intelligent patch application
+                test_branch = await github_breaker.call(
+                    self.patch_service.create_smart_branch, "main", ticket.id
+                )
+                self.log_execution(execution_id, f"Created test branch: {test_branch}")
+            except Exception as e:
+                self.log_execution(execution_id, f"Failed to create test branch: {e}")
+                result = await self._fallback_validation(patches, execution_id, ticket.id)
+                metrics_collector.record_agent_execution("qa", time.time() - start_time, False, ticket.id)
+                return result
+            
+            # Validate repository state before applying patches
+            file_paths = [patch.get("target_file") for patch in patches if patch.get("target_file")]
+            repo_validation = await self.patch_service.validate_repository_state(file_paths)
+            
+            if not repo_validation["valid"]:
+                self.log_execution(execution_id, f"Repository validation failed: {repo_validation['missing_files']}")
+                result = await self._fallback_validation(patches, execution_id, ticket.id)
+                metrics_collector.record_agent_execution("qa", time.time() - start_time, False, ticket.id)
+                return result
+            
+            # Apply patches intelligently with monitoring
+            try:
+                patch_start_time = time.time()
+                patch_results = await self.patch_service.apply_patches_intelligently(patches, test_branch)
+                patch_duration = time.time() - patch_start_time
+                
+                metrics_collector.record_github_operation("patch_application", patch_duration, True)
+                
+                # Update patch attempts with results
+                self._update_patch_results_from_intelligent_application(ticket, patch_results)
+                
+                successful_patches = len(patch_results["successful_patches"])
+                total_patches = len(patches)
+                
+                result = {
+                    "status": "completed",
+                    "patches_tested": total_patches,
+                    "successful_patches": successful_patches,
+                    "failed_patches": len(patch_results["failed_patches"]),
+                    "conflicts_detected": len(patch_results["conflicts_detected"]),
+                    "files_modified": patch_results["files_modified"],
+                    "test_branch": test_branch,
+                    "ready_for_deployment": successful_patches > 0 and len(patch_results["conflicts_detected"]) == 0,
+                    "patch_application_results": patch_results,
+                    "validated_patches": patch_results["successful_patches"],
+                    "patch_application_duration": patch_duration
+                }
+                
+                self.log_execution(execution_id, f"Intelligent QA completed: {successful_patches}/{total_patches} patches applied successfully")
+                
+                # If we have conflicts, provide detailed information
+                if patch_results["conflicts_detected"]:
+                    self.log_execution(execution_id, f"Conflicts detected: {patch_results['conflicts_detected']}")
+                
+                # Update pipeline context
+                if pipeline_context:
+                    context_manager.update_stage(
+                        pipeline_context.context_id, 
+                        PipelineStage.QA, 
+                        result, 
+                        "success", 
+                        duration=time.time() - start_time
+                    )
+                
+                # Record successful execution
+                metrics_collector.record_agent_execution("qa", time.time() - start_time, True, ticket.id)
+                return result
+                
+            except Exception as e:
+                self.log_execution(execution_id, f"Error in intelligent patch application: {e}")
+                result = await self._fallback_validation(patches, execution_id, ticket.id)
+                metrics_collector.record_agent_execution("qa", time.time() - start_time, False, ticket.id)
+                return result
+                
         except Exception as e:
-            self.log_execution(execution_id, f"Failed to create test branch: {e}")
-            return await self._fallback_validation(patches, execution_id)
-        
-        # Validate repository state before applying patches
-        file_paths = [patch.get("target_file") for patch in patches if patch.get("target_file")]
-        repo_validation = await self.patch_service.validate_repository_state(file_paths)
-        
-        if not repo_validation["valid"]:
-            self.log_execution(execution_id, f"Repository validation failed: {repo_validation['missing_files']}")
-            return await self._fallback_validation(patches, execution_id)
-        
-        # Apply patches intelligently
-        try:
-            patch_results = await self.patch_service.apply_patches_intelligently(patches, test_branch)
-            
-            # Update patch attempts with results
-            self._update_patch_results_from_intelligent_application(ticket, patch_results)
-            
-            successful_patches = len(patch_results["successful_patches"])
-            total_patches = len(patches)
-            
-            result = {
-                "status": "completed",
-                "patches_tested": total_patches,
-                "successful_patches": successful_patches,
-                "failed_patches": len(patch_results["failed_patches"]),
-                "conflicts_detected": len(patch_results["conflicts_detected"]),
-                "files_modified": patch_results["files_modified"],
-                "test_branch": test_branch,
-                "ready_for_deployment": successful_patches > 0 and len(patch_results["conflicts_detected"]) == 0,
-                "patch_application_results": patch_results,
-                "validated_patches": patch_results["successful_patches"]
-            }
-            
-            self.log_execution(execution_id, f"Intelligent QA completed: {successful_patches}/{total_patches} patches applied successfully")
-            
-            # If we have conflicts, provide detailed information
-            if patch_results["conflicts_detected"]:
-                self.log_execution(execution_id, f"Conflicts detected: {patch_results['conflicts_detected']}")
-            
-            return result
-            
-        except Exception as e:
-            self.log_execution(execution_id, f"Error in intelligent patch application: {e}")
-            return await self._fallback_validation(patches, execution_id)
+            logger.error(f"Unexpected error in QA agent: {e}")
+            metrics_collector.record_agent_execution("qa", time.time() - start_time, False, ticket.id)
+            raise e
     
-    async def _fallback_validation(self, patches: List[Dict], execution_id: int) -> Dict[str, Any]:
+    async def _fallback_validation(self, patches: List[Dict], execution_id: int, ticket_id: int) -> Dict[str, Any]:
         """Fallback to basic validation when intelligent patching fails"""
         self.log_execution(execution_id, "Falling back to basic patch validation")
         
