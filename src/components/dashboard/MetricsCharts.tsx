@@ -165,21 +165,29 @@ export const MetricsCharts = () => {
           </CardHeader>
           <CardContent>
             <div className="grid gap-4 md:grid-cols-3">
-              {Object.entries(performanceTrends).map(([metric, data]) => (
-                <div key={metric} className="p-4 border rounded-lg">
-                  <h4 className="font-medium text-sm mb-2">{metric.replace(/_/g, ' ')}</h4>
-                  <div className="text-2xl font-bold">{data.avg_value?.toFixed(2) || 'N/A'}</div>
-                  <div className={`text-sm ${
-                    data.trend_direction === 'increasing' ? 'text-red-500' : 
-                    data.trend_direction === 'decreasing' ? 'text-green-500' : 'text-gray-500'
-                  }`}>
-                    {data.trend_direction} trend
+              {Object.entries(performanceTrends).map(([metric, data]) => {
+                const trendData = data as {
+                  avg_value: number;
+                  trend_direction: 'increasing' | 'decreasing' | 'stable';
+                  data_points: number;
+                };
+                
+                return (
+                  <div key={metric} className="p-4 border rounded-lg">
+                    <h4 className="font-medium text-sm mb-2">{metric.replace(/_/g, ' ')}</h4>
+                    <div className="text-2xl font-bold">{trendData.avg_value?.toFixed(2) || 'N/A'}</div>
+                    <div className={`text-sm ${
+                      trendData.trend_direction === 'increasing' ? 'text-red-500' : 
+                      trendData.trend_direction === 'decreasing' ? 'text-green-500' : 'text-gray-500'
+                    }`}>
+                      {trendData.trend_direction} trend
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {trendData.data_points} data points
+                    </div>
                   </div>
-                  <div className="text-xs text-muted-foreground">
-                    {data.data_points} data points
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </CardContent>
         </Card>
