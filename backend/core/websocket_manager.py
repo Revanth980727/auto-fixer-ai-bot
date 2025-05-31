@@ -48,3 +48,34 @@ class ConnectionManager:
             "agent_type": agent_type,
             "status": status
         })
+
+    async def broadcast_system_health_update(self, health_data: dict):
+        """Broadcast system health status update"""
+        await self.broadcast({
+            "type": "system_health_update",
+            "data": health_data
+        })
+
+    async def broadcast_pipeline_update(self, context_id: str, stage: str, status: str):
+        """Broadcast pipeline execution update"""
+        await self.broadcast({
+            "type": "pipeline_update",
+            "context_id": context_id,
+            "stage": stage,
+            "status": status
+        })
+
+    async def broadcast_metrics_update(self, metrics_data: dict):
+        """Broadcast real-time metrics update"""
+        await self.broadcast({
+            "type": "metrics_update",
+            "data": metrics_data
+        })
+
+    async def broadcast_circuit_breaker_event(self, service: str, state: str):
+        """Broadcast circuit breaker state change"""
+        await self.broadcast({
+            "type": "circuit_breaker_event",
+            "service": service,
+            "state": state
+        })

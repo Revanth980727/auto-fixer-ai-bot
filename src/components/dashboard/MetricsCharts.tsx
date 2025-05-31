@@ -1,7 +1,7 @@
 
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { apiUrl } from '@/config/api';
 
 export const MetricsCharts = () => {
@@ -15,7 +15,17 @@ export const MetricsCharts = () => {
     refetchInterval: 30000,
   });
 
-  // Mock data for development
+  const { data: performanceTrends } = useQuery({
+    queryKey: ['performance-trends'],
+    queryFn: async () => {
+      const response = await fetch(apiUrl('/api/metrics/performance-trends?hours=24'));
+      if (!response.ok) throw new Error('Failed to fetch performance trends');
+      return response.json();
+    },
+    refetchInterval: 60000,
+  });
+
+  // Enhanced mock data with real structure
   const mockData = {
     successRate: [
       { date: '2024-01-01', rate: 85 },
@@ -25,19 +35,23 @@ export const MetricsCharts = () => {
       { date: '2024-01-05', rate: 94 },
     ],
     agentActivity: [
-      { agent: 'Intake', tasks: 45 },
-      { agent: 'Planner', tasks: 38 },
-      { agent: 'Developer', tasks: 42 },
-      { agent: 'QA', tasks: 35 },
-      { agent: 'Communicator', tasks: 40 },
+      { agent: 'Intake', tasks: 45, success_rate: 95, avg_duration: 2.1 },
+      { agent: 'Planner', tasks: 38, success_rate: 89, avg_duration: 8.3 },
+      { agent: 'Developer', tasks: 42, success_rate: 82, avg_duration: 45.2 },
+      { agent: 'QA', tasks: 35, success_rate: 91, avg_duration: 12.7 },
+      { agent: 'Communicator', tasks: 40, success_rate: 97, avg_duration: 3.4 },
     ],
     errorTypes: [
-      { name: 'Syntax Error', value: 30, color: '#ff6b6b' },
-      { name: 'Logic Error', value: 25, color: '#4ecdc4' },
-      { name: 'Runtime Error', value: 20, color: '#45b7d1' },
-      { name: 'Import Error', value: 15, color: '#96ceb4' },
-      { name: 'Other', value: 10, color: '#ffeaa7' },
+      { name: 'Agent Failures', value: 8, color: '#ff6b6b' },
+      { name: 'Pipeline Errors', value: 5, color: '#4ecdc4' },
+      { name: 'GitHub API Errors', value: 3, color: '#45b7d1' },
+      { name: 'Context Validation', value: 2, color: '#96ceb4' },
+      { name: 'Other', value: 1, color: '#ffeaa7' },
     ],
+    systemHealth: {
+      overall_status: 'healthy',
+      alerts: []
+    }
   };
 
   const data = isLoading ? mockData : metricsData || mockData;
@@ -45,7 +59,7 @@ export const MetricsCharts = () => {
   if (isLoading) {
     return (
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
-        {[...Array(3)].map((_, i) => (
+        {[...Array(6)].map((_, i) => (
           <Card key={i}>
             <CardHeader>
               <div className="h-4 bg-gray-200 rounded animate-pulse" />
@@ -64,18 +78,18 @@ export const MetricsCharts = () => {
       <Card className="md:col-span-2">
         <CardHeader>
           <CardTitle>Success Rate Trend</CardTitle>
-          <CardDescription>AI agent success rate over time</CardDescription>
+          <CardDescription>AI agent success rate over the last 7 days</CardDescription>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={300}>
-            <LineChart data={data.successRate}>
+            <AreaChart data={data.successRate}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="date" />
-              <YAxis />
+              <YAxis domain={[0, 100]} />
               <Tooltip />
               <Legend />
-              <Line type="monotone" dataKey="rate" stroke="#8884d8" strokeWidth={2} />
-            </LineChart>
+              <Area type="monotone" dataKey="rate" stroke="#8884d8" fill="#8884d8" fillOpacity={0.3} strokeWidth={2} />
+            </AreaChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
@@ -107,24 +121,72 @@ export const MetricsCharts = () => {
         </CardContent>
       </Card>
 
-      <Card className="md:col-span-2 lg:col-span-3">
+      <Card className="md:col-span-2">
         <CardHeader>
-          <CardTitle>Agent Activity</CardTitle>
-          <CardDescription>Tasks processed by each agent</CardDescription>
+          <CardTitle>Agent Performance</CardTitle>
+          <CardDescription>Tasks processed and success rates by agent</CardDescription>
         </CardHeader>
         <CardContent>
           <ResponsiveContainer width="100%" height={300}>
             <BarChart data={data.agentActivity}>
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="agent" />
-              <YAxis />
+              <YAxis yAxisId="left" />
+              <YAxis yAxisId="right" orientation="right" domain={[0, 100]} />
               <Tooltip />
               <Legend />
-              <Bar dataKey="tasks" fill="#8884d8" />
+              <Bar yAxisId="left" dataKey="tasks" fill="#8884d8" name="Tasks" />
+              <Bar yAxisId="right" dataKey="success_rate" fill="#82ca9d" name="Success Rate %" />
             </BarChart>
           </ResponsiveContainer>
         </CardContent>
       </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Execution Times</CardTitle>
+          <CardDescription>Average agent execution duration</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart data={data.agentActivity} layout="horizontal">
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis type="number" />
+              <YAxis dataKey="agent" type="category" />
+              <Tooltip formatter={(value) => [`${value}s`, 'Avg Duration']} />
+              <Bar dataKey="avg_duration" fill="#ffc658" />
+            </BarChart>
+          </ResponsiveContainer>
+        </CardContent>
+      </Card>
+
+      {performanceTrends && Object.keys(performanceTrends).length > 0 && (
+        <Card className="md:col-span-3">
+          <CardHeader>
+            <CardTitle>Performance Trends (24h)</CardTitle>
+            <CardDescription>Real-time performance metrics and trends</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-3">
+              {Object.entries(performanceTrends).map(([metric, data]: [string, any]) => (
+                <div key={metric} className="p-4 border rounded-lg">
+                  <h4 className="font-medium text-sm mb-2">{metric.replace(/_/g, ' ')}</h4>
+                  <div className="text-2xl font-bold">{data.avg_value?.toFixed(2) || 'N/A'}</div>
+                  <div className={`text-sm ${
+                    data.trend_direction === 'increasing' ? 'text-red-500' : 
+                    data.trend_direction === 'decreasing' ? 'text-green-500' : 'text-gray-500'
+                  }`}>
+                    {data.trend_direction} trend
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {data.data_points} data points
+                  </div>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 };

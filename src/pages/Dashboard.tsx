@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -8,8 +9,10 @@ import { TicketTable } from '@/components/dashboard/TicketTable';
 import { AgentStatus } from '@/components/dashboard/AgentStatus';
 import { MetricsCharts } from '@/components/dashboard/MetricsCharts';
 import { LiveLogs } from '@/components/dashboard/LiveLogs';
+import { SystemHealth } from '@/components/dashboard/SystemHealth';
+import { PipelineMonitor } from '@/components/dashboard/PipelineMonitor';
 import { WebSocketProvider } from '@/components/providers/WebSocketProvider';
-import { Activity, AlertCircle, CheckCircle, Clock, TrendingUp } from 'lucide-react';
+import { Activity, AlertCircle, CheckCircle, Clock, TrendingUp, Shield } from 'lucide-react';
 import { apiUrl } from '@/config/api';
 
 const Dashboard = () => {
@@ -37,6 +40,17 @@ const Dashboard = () => {
     refetchInterval: 10000, // Refresh every 10 seconds
   });
 
+  // Fetch system health
+  const { data: systemHealth } = useQuery({
+    queryKey: ['system-health'],
+    queryFn: async () => {
+      const response = await fetch(apiUrl('/api/metrics/health'));
+      if (!response.ok) throw new Error('Failed to fetch health data');
+      return response.json();
+    },
+    refetchInterval: 5000,
+  });
+
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'completed': return 'bg-green-500';
@@ -47,6 +61,21 @@ const Dashboard = () => {
     }
   };
 
+  const getHealthBadge = () => {
+    const status = systemHealth?.overall_status || 'unknown';
+    const variant = status === 'healthy' ? 'default' : status === 'degraded' ? 'secondary' : 'destructive';
+    const icon = status === 'healthy' ? <CheckCircle className="w-4 h-4 mr-1" /> : 
+                 status === 'degraded' ? <AlertCircle className="w-4 h-4 mr-1" /> : 
+                 <Shield className="w-4 h-4 mr-1" />;
+    
+    return (
+      <Badge variant={variant as any}>
+        {icon}
+        System {status}
+      </Badge>
+    );
+  };
+
   return (
     <WebSocketProvider>
       <div className="min-h-screen bg-background">
@@ -55,13 +84,10 @@ const Dashboard = () => {
             <div>
               <h1 className="text-3xl font-bold tracking-tight">AI Agent Dashboard</h1>
               <p className="text-muted-foreground">
-                Autonomous bug fixing and code generation system
+                Production-ready autonomous bug fixing and code generation system
               </p>
             </div>
-            <Badge variant="outline" className="text-green-600 border-green-600">
-              <Activity className="w-4 h-4 mr-1" />
-              System Active
-            </Badge>
+            {getHealthBadge()}
           </div>
 
           {/* System Overview Cards */}
@@ -113,15 +139,15 @@ const Dashboard = () => {
 
             <Card>
               <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                <CardTitle className="text-sm font-medium">Escalated</CardTitle>
-                <TrendingUp className="h-4 w-4 text-muted-foreground" />
+                <CardTitle className="text-sm font-medium">System Health</CardTitle>
+                <Shield className="h-4 w-4 text-muted-foreground" />
               </CardHeader>
               <CardContent>
-                <div className="text-2xl font-bold">
-                  {metricsLoading ? '...' : systemMetrics?.escalated_tickets || 0}
+                <div className="text-2xl font-bold capitalize">
+                  {systemHealth?.overall_status || 'Unknown'}
                 </div>
                 <p className="text-xs text-muted-foreground">
-                  Requiring human review
+                  {systemHealth?.alerts?.length || 0} active alerts
                 </p>
               </CardContent>
             </Card>
@@ -129,11 +155,12 @@ const Dashboard = () => {
 
           {/* Main Content Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-            <TabsList className="grid w-full grid-cols-5">
+            <TabsList className="grid w-full grid-cols-6">
               <TabsTrigger value="overview">Overview</TabsTrigger>
+              <TabsTrigger value="health">Health</TabsTrigger>
+              <TabsTrigger value="pipelines">Pipelines</TabsTrigger>
               <TabsTrigger value="tickets">Tickets</TabsTrigger>
               <TabsTrigger value="agents">Agents</TabsTrigger>
-              <TabsTrigger value="logs">Live Logs</TabsTrigger>
               <TabsTrigger value="analytics">Analytics</TabsTrigger>
             </TabsList>
 
@@ -176,16 +203,20 @@ const Dashboard = () => {
               </div>
             </TabsContent>
 
+            <TabsContent value="health">
+              <SystemHealth />
+            </TabsContent>
+
+            <TabsContent value="pipelines">
+              <PipelineMonitor />
+            </TabsContent>
+
             <TabsContent value="tickets">
               <TicketTable />
             </TabsContent>
 
             <TabsContent value="agents">
               <AgentStatus detailed={true} />
-            </TabsContent>
-
-            <TabsContent value="logs">
-              <LiveLogs />
             </TabsContent>
 
             <TabsContent value="analytics">
