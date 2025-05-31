@@ -343,23 +343,28 @@ class AgentOrchestrator:
             logger.error(f"❌ GitHub not configured - cannot prepare production planner context for ticket {ticket.id}")
             return {"github_access_failed": True}
         
-        context = {
-            "ticket": ticket,
-            "repository_files": [],
-            "error_trace_files": [],
-            "repository_structure": {},
-            "repository_analysis": {},
-            "relevant_files": []
-        }
-        
         # Get repository analysis for intelligent file discovery
+        repo_analysis = {}
+        discovered_files = []
         try:
             repo_analysis = await self.repository_analyzer.analyze_repository()
             if not repo_analysis.get("error"):
-                context["repository_analysis"] = repo_analysis
-                logger.info(f"📊 Repository analysis available: {repo_analysis.get('total_files', 0)} files")
+                discovered_files = repo_analysis.get("files", [])
+                logger.info(f"📊 Repository analysis available: {len(discovered_files)} files discovered")
+            else:
+                logger.warning(f"Repository analysis failed: {repo_analysis.get('error')}")
         except Exception as e:
             logger.warning(f"Repository analysis failed: {e}")
+        
+        context = {
+            "ticket": ticket,
+            "repository_files": discovered_files,
+            "error_trace_files": [],
+            "repository_structure": {},
+            "repository_analysis": repo_analysis,
+            "relevant_files": [],
+            "discovered_files": discovered_files  # Add discovered files for planner use
+        }
         
         # Enhanced file discovery using repository intelligence
         if ticket.error_trace:
@@ -389,12 +394,18 @@ class AgentOrchestrator:
                     except Exception as e:
                         logger.error(f"❌ Could not fetch file {file_info['path']}: {e}")
                 
-                # If intelligent discovery failed, fall back to basic extraction
+                # If intelligent discovery failed, fall back to basic extraction but use discovered files
                 if files_fetched == 0:
                     file_matches = re.findall(r'File "([^"]+)"', ticket.error_trace)
                     logger.info(f"📁 Falling back to basic file extraction: {file_matches}")
                     
-                    for file_path in file_matches[:5]:  # Limit to 5 files
+                    # Filter file matches to only include files that actually exist in the repository
+                    discovered_file_paths = [f.get("path", "") for f in discovered_files]
+                    valid_file_matches = [f for f in file_matches if f in discovered_file_paths]
+                    
+                    logger.info(f"📁 Valid files from error trace: {valid_file_matches}")
+                    
+                    for file_path in valid_file_matches[:5]:  # Limit to 5 files
                         try:
                             file_content = await self.github_client.get_file_content(file_path)
                             if file_content:
@@ -508,7 +519,7 @@ class AgentOrchestrator:
         import hashlib
         return hashlib.sha256(content.encode()).hexdigest()
 
-    # ... keep existing code (stop_processing, _intake_polling_loop, process_pending_tickets, _mark_ticket_for_review, _validate_planner_results, _validate_enhanced_developer_results, retry_failed_ticket, _update_jira_status methods)
+    # ... keep existing code (stop_processing, _intake_polling_loop, process_pending_tickets, _mark_ticket_for_review, _validate_planner_results, _validate_enhanced_developer_results, retry_failed_ticket methods)
 
     async def _health_monitoring_loop(self):
         """Background health monitoring loop"""
@@ -616,8 +627,7 @@ class AgentOrchestrator:
                 db.commit()
         
         # Update Jira status to "Needs Review"
-        await self._update_jira_status(jira_id, "Needs Review", 
-                                     f"Production AI Agent requires human intervention. {reason}")
+        await self._update_jira_status(jira_id, "Needs Review", reason)
         
         logger.warning(f"🔍 Ticket {ticket_id} marked for human review: {reason}")
 
@@ -702,8 +712,12 @@ class AgentOrchestrator:
         """Update JIRA ticket status and add comment"""
         try:
             if jira_id:
-                # Update ticket status with comment using the correct method
-                await self.jira_client.update_ticket_status(jira_id, status, comment)
-                logger.info(f"✅ Updated JIRA {jira_id} status to {status}")
+                # Use the correct JIRA client method with proper parameters
+                success = await self.jira_client.update_ticket_status(jira_id, status, comment)
+                if success:
+                    logger.info(f"✅ Updated JIRA {jira_id} status to {status}")
+                else:
+                    logger.error(f"❌ Failed to update JIRA {jira_id} status to {status}")
         except Exception as e:
-            logger.error(f"❌ Failed to update JIRA {jira_id}: {e}")
+            logger.error(f"❌ Error updating JIRA {jira_id}: {e}")
+
