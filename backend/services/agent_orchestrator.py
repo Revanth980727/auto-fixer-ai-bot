@@ -1,4 +1,3 @@
-
 import asyncio
 from typing import Dict, Any, List
 from core.models import Ticket, TicketStatus, AgentType
@@ -90,7 +89,17 @@ class AgentOrchestrator:
                 logger.warning(f"Repository analysis failed: {repo_analysis['error']}")
                 metrics_collector.record_github_operation("repository_analysis", analysis_duration, False)
             else:
-                logger.info(f"Repository analysis completed: {repo_analysis.get('total_files', 0)} files analyzed")
+                # Fix: Access files from the correct nested structure
+                files = repo_analysis.get("repository_structure", {}).get("files", [])
+                if not files:
+                    # Fallback: try direct access
+                    files = repo_analysis.get("files", [])
+                
+                logger.info(f"Repository analysis completed: {len(files)} files analyzed")
+                logger.info(f"Repository analysis structure keys: {list(repo_analysis.keys())}")
+                if files:
+                    logger.info(f"Sample discovered files: {[f.get('path', str(f)) for f in files[:5]]}")
+                
                 metrics_collector.record_github_operation("repository_analysis", analysis_duration, True)
                 
                 # Log key insights
@@ -349,12 +358,33 @@ class AgentOrchestrator:
         try:
             repo_analysis = await self.repository_analyzer.analyze_repository()
             if not repo_analysis.get("error"):
-                discovered_files = repo_analysis.get("files", [])
+                # Fix: Access files from the correct nested structure
+                files = repo_analysis.get("repository_structure", {}).get("files", [])
+                if not files:
+                    # Fallback: try direct access
+                    files = repo_analysis.get("files", [])
+                
+                discovered_files = files
                 logger.info(f"📊 Repository analysis available: {len(discovered_files)} files discovered")
+                
+                # Add detailed logging of the structure we received
+                if discovered_files:
+                    sample_files = [f.get('path', str(f)) if isinstance(f, dict) else str(f) for f in discovered_files[:5]]
+                    logger.info(f"📁 Sample discovered files: {sample_files}")
+                else:
+                    logger.warning(f"⚠️ No files found in repository analysis")
+                    logger.info(f"📋 Repository analysis keys: {list(repo_analysis.keys())}")
+                    if "repository_structure" in repo_analysis:
+                        logger.info(f"📋 Repository structure keys: {list(repo_analysis['repository_structure'].keys())}")
             else:
                 logger.warning(f"Repository analysis failed: {repo_analysis.get('error')}")
         except Exception as e:
             logger.warning(f"Repository analysis failed: {e}")
+        
+        # Validate that we have discovered files before proceeding
+        if not discovered_files:
+            logger.error(f"❌ No discovered files available for ticket {ticket.id} - cannot prepare production context")
+            return {"github_access_failed": True}
         
         context = {
             "ticket": ticket,
@@ -363,7 +393,7 @@ class AgentOrchestrator:
             "repository_structure": {},
             "repository_analysis": repo_analysis,
             "relevant_files": [],
-            "discovered_files": discovered_files  # Add discovered files for planner use
+            "discovered_files": discovered_files  # Ensure this is consistently set
         }
         
         # Enhanced file discovery using repository intelligence
@@ -400,7 +430,7 @@ class AgentOrchestrator:
                     logger.info(f"📁 Falling back to basic file extraction: {file_matches}")
                     
                     # Filter file matches to only include files that actually exist in the repository
-                    discovered_file_paths = [f.get("path", "") for f in discovered_files]
+                    discovered_file_paths = [f.get("path", "") if isinstance(f, dict) else str(f) for f in discovered_files]
                     valid_file_matches = [f for f in file_matches if f in discovered_file_paths]
                     
                     logger.info(f"📁 Valid files from error trace: {valid_file_matches}")
@@ -420,14 +450,13 @@ class AgentOrchestrator:
                         except Exception as e:
                             logger.error(f"❌ Could not fetch file {file_path}: {e}")
                 
-                # If we still couldn't fetch any files, this is a failure
-                if files_fetched == 0 and len(relevant_files) > 0:
-                    logger.error(f"❌ Failed to fetch any source files for production planner on ticket {ticket.id}")
-                    return {"github_access_failed": True}
+                # Log final context preparation summary
+                logger.info(f"📊 Final context summary: {len(context['error_trace_files'])} error trace files, {len(discovered_files)} discovered files")
                     
             except Exception as e:
                 logger.error(f"Error in intelligent file discovery: {e}")
-                return {"github_access_failed": True}
+                # Don't fail completely, we still have discovered files
+                logger.warning(f"⚠️ Continuing with basic discovered files context")
         else:
             logger.warning(f"⚠️ No error trace found for ticket {ticket.id}")
         
@@ -518,8 +547,6 @@ class AgentOrchestrator:
         """Calculate SHA256 hash of file content for tracking"""
         import hashlib
         return hashlib.sha256(content.encode()).hexdigest()
-
-    # ... keep existing code (stop_processing, _intake_polling_loop, process_pending_tickets, _mark_ticket_for_review, _validate_planner_results, _validate_enhanced_developer_results, retry_failed_ticket methods)
 
     async def _health_monitoring_loop(self):
         """Background health monitoring loop"""
@@ -720,4 +747,3 @@ class AgentOrchestrator:
                     logger.error(f"❌ Failed to update JIRA {jira_id} status to {status}")
         except Exception as e:
             logger.error(f"❌ Error updating JIRA {jira_id}: {e}")
-
