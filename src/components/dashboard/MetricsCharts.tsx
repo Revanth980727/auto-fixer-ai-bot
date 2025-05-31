@@ -3,11 +3,12 @@ import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
 import { apiUrl } from '@/config/api';
+import { MetricsChartsData, PerformanceTrends } from '@/types/metrics';
 
 export const MetricsCharts = () => {
   const { data: metricsData, isLoading } = useQuery({
     queryKey: ['metrics-charts'],
-    queryFn: async () => {
+    queryFn: async (): Promise<MetricsChartsData> => {
       const response = await fetch(apiUrl('/api/metrics/charts'));
       if (!response.ok) throw new Error('Failed to fetch metrics data');
       return response.json();
@@ -17,7 +18,7 @@ export const MetricsCharts = () => {
 
   const { data: performanceTrends } = useQuery({
     queryKey: ['performance-trends'],
-    queryFn: async () => {
+    queryFn: async (): Promise<PerformanceTrends> => {
       const response = await fetch(apiUrl('/api/metrics/performance-trends?hours=24'));
       if (!response.ok) throw new Error('Failed to fetch performance trends');
       return response.json();
@@ -26,7 +27,7 @@ export const MetricsCharts = () => {
   });
 
   // Enhanced mock data with real structure
-  const mockData = {
+  const mockData: MetricsChartsData = {
     successRate: [
       { date: '2024-01-01', rate: 85 },
       { date: '2024-01-02', rate: 88 },
@@ -48,10 +49,6 @@ export const MetricsCharts = () => {
       { name: 'Context Validation', value: 2, color: '#96ceb4' },
       { name: 'Other', value: 1, color: '#ffeaa7' },
     ],
-    systemHealth: {
-      overall_status: 'healthy',
-      alerts: []
-    }
   };
 
   const data = isLoading ? mockData : metricsData || mockData;
@@ -111,7 +108,7 @@ export const MetricsCharts = () => {
                 dataKey="value"
                 label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
               >
-                {data.errorTypes.map((entry: any, index: number) => (
+                {data.errorTypes.map((entry, index: number) => (
                   <Cell key={`cell-${index}`} fill={entry.color} />
                 ))}
               </Pie>
@@ -168,7 +165,7 @@ export const MetricsCharts = () => {
           </CardHeader>
           <CardContent>
             <div className="grid gap-4 md:grid-cols-3">
-              {Object.entries(performanceTrends).map(([metric, data]: [string, any]) => (
+              {Object.entries(performanceTrends).map(([metric, data]) => (
                 <div key={metric} className="p-4 border rounded-lg">
                   <h4 className="font-medium text-sm mb-2">{metric.replace(/_/g, ' ')}</h4>
                   <div className="text-2xl font-bold">{data.avg_value?.toFixed(2) || 'N/A'}</div>

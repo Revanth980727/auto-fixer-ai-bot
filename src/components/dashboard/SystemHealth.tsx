@@ -6,11 +6,12 @@ import { Progress } from '@/components/ui/progress';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { CheckCircle, AlertCircle, XCircle, Activity, Zap, Shield } from 'lucide-react';
 import { apiUrl } from '@/config/api';
+import { SystemHealth as SystemHealthType, AdvancedMetrics, CircuitBreaker, AgentPerformance } from '@/types/metrics';
 
 export const SystemHealth = () => {
   const { data: healthData, isLoading } = useQuery({
     queryKey: ['system-health'],
-    queryFn: async () => {
+    queryFn: async (): Promise<SystemHealthType> => {
       const response = await fetch(apiUrl('/api/metrics/health'));
       if (!response.ok) throw new Error('Failed to fetch health data');
       return response.json();
@@ -20,7 +21,7 @@ export const SystemHealth = () => {
 
   const { data: advancedMetrics } = useQuery({
     queryKey: ['advanced-metrics'],
-    queryFn: async () => {
+    queryFn: async (): Promise<AdvancedMetrics> => {
       const response = await fetch(apiUrl('/api/metrics/advanced'));
       if (!response.ok) throw new Error('Failed to fetch advanced metrics');
       return response.json();
@@ -111,7 +112,7 @@ export const SystemHealth = () => {
         </CardHeader>
         <CardContent>
           <div className="space-y-3">
-            {Object.entries(circuitBreakers).map(([service, breaker]: [string, any]) => (
+            {Object.entries(circuitBreakers).map(([service, breaker]: [string, CircuitBreaker]) => (
               <div key={service} className="flex items-center justify-between p-3 border rounded-lg">
                 <div className="flex items-center gap-2">
                   <div className={`w-2 h-2 rounded-full ${
@@ -144,7 +145,7 @@ export const SystemHealth = () => {
         </CardHeader>
         <CardContent>
           <div className="space-y-4">
-            {Object.entries(advancedMetrics?.agent_performance || {}).map(([agent, metrics]: [string, any]) => (
+            {Object.entries(advancedMetrics?.agent_performance || {}).map(([agent, metrics]: [string, AgentPerformance]) => (
               <div key={agent} className="space-y-2">
                 <div className="flex items-center justify-between">
                   <span className="font-medium capitalize">{agent}</span>

@@ -6,11 +6,12 @@ import { Progress } from '@/components/ui/progress';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Clock, CheckCircle, AlertCircle, Play, Pause } from 'lucide-react';
 import { apiUrl } from '@/config/api';
+import { AdvancedMetrics, Pipeline } from '@/types/metrics';
 
 export const PipelineMonitor = () => {
   const { data: advancedMetrics, isLoading } = useQuery({
     queryKey: ['advanced-metrics'],
-    queryFn: async () => {
+    queryFn: async (): Promise<AdvancedMetrics> => {
       const response = await fetch(apiUrl('/api/metrics/advanced'));
       if (!response.ok) throw new Error('Failed to fetch advanced metrics');
       return response.json();
@@ -69,7 +70,7 @@ export const PipelineMonitor = () => {
                 No active pipelines
               </div>
             ) : (
-              pipelines.map((pipeline: any) => (
+              pipelines.map((pipeline: Pipeline) => (
                 <div key={pipeline.context_id} className="border rounded-lg p-4 space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-2">

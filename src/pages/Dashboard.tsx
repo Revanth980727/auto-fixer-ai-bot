@@ -1,4 +1,3 @@
-
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +13,7 @@ import { PipelineMonitor } from '@/components/dashboard/PipelineMonitor';
 import { WebSocketProvider } from '@/components/providers/WebSocketProvider';
 import { Activity, AlertCircle, CheckCircle, Clock, TrendingUp, Shield } from 'lucide-react';
 import { apiUrl } from '@/config/api';
+import { SystemMetrics, Ticket, SystemHealth as SystemHealthType } from '@/types/metrics';
 
 const Dashboard = () => {
   const [activeTab, setActiveTab] = useState('overview');
@@ -21,7 +21,7 @@ const Dashboard = () => {
   // Fetch system metrics
   const { data: systemMetrics, isLoading: metricsLoading } = useQuery({
     queryKey: ['system-metrics'],
-    queryFn: async () => {
+    queryFn: async (): Promise<SystemMetrics> => {
       const response = await fetch(apiUrl('/api/metrics/system'));
       if (!response.ok) throw new Error('Failed to fetch metrics');
       return response.json();
@@ -32,7 +32,7 @@ const Dashboard = () => {
   // Fetch recent tickets
   const { data: tickets, isLoading: ticketsLoading } = useQuery({
     queryKey: ['tickets'],
-    queryFn: async () => {
+    queryFn: async (): Promise<Ticket[]> => {
       const response = await fetch(apiUrl('/api/tickets?limit=20'));
       if (!response.ok) throw new Error('Failed to fetch tickets');
       return response.json();
@@ -43,7 +43,7 @@ const Dashboard = () => {
   // Fetch system health
   const { data: systemHealth } = useQuery({
     queryKey: ['system-health'],
-    queryFn: async () => {
+    queryFn: async (): Promise<SystemHealthType> => {
       const response = await fetch(apiUrl('/api/metrics/health'));
       if (!response.ok) throw new Error('Failed to fetch health data');
       return response.json();
@@ -69,7 +69,7 @@ const Dashboard = () => {
                  <Shield className="w-4 h-4 mr-1" />;
     
     return (
-      <Badge variant={variant as any}>
+      <Badge variant={variant as 'default' | 'secondary' | 'destructive'}>
         {icon}
         System {status}
       </Badge>
@@ -180,7 +180,7 @@ const Dashboard = () => {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        {tickets?.slice(0, 5).map((ticket: any) => (
+                        {tickets?.slice(0, 5).map((ticket: Ticket) => (
                           <div key={ticket.id} className="flex items-center space-x-4">
                             <div className={`w-2 h-2 rounded-full ${getStatusColor(ticket.status)}`} />
                             <div className="flex-1 space-y-1">
