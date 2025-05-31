@@ -1,6 +1,6 @@
 
 import requests
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import os
 import base64
 import logging
@@ -27,6 +27,35 @@ class GitHubClient:
         if not self._is_configured():
             logger.warning("GitHub client is not properly configured - will operate in degraded mode")
     
+    async def get_repository_tree(self, branch: str = "main", recursive: bool = True) -> List[Dict[str, Any]]:
+        """Get repository tree structure from GitHub API"""
+        if not self._is_configured():
+            logger.warning("GitHub not configured - cannot get repository tree")
+            return []
+        
+        try:
+            url = f"{self.base_url}/repos/{self.repo_owner}/{self.repo_name}/git/trees/{branch}"
+            params = {"recursive": "1"} if recursive else {}
+            
+            response = requests.get(url, headers=self.headers, params=params)
+            
+            if response.status_code == 200:
+                data = response.json()
+                tree_items = data.get("tree", [])
+                logger.info(f"Successfully fetched repository tree: {len(tree_items)} items")
+                return tree_items
+            elif response.status_code == 404:
+                logger.warning(f"Repository tree not found for branch: {branch}")
+                return []
+            else:
+                logger.error(f"Failed to get repository tree: HTTP {response.status_code} - {response.text}")
+                return []
+                
+        except Exception as e:
+            logger.error(f"Error getting repository tree: {e}")
+            return []
+
+    # ... keep existing code (all other methods remain the same)
     async def get_file_content(self, file_path: str, branch: str = "main") -> Optional[str]:
         """Get file content from repository with better error handling"""
         if not self._is_configured():
