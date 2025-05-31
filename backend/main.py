@@ -3,97 +3,104 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
-import uvicorn
-from api.routes import tickets, agents, metrics, logs, webhooks, manual
-from core.database import init_db
-from services.ticket_poller import TicketPoller
-from services.agent_orchestrator import AgentOrchestrator
-from core.websocket_manager import ConnectionManager
 import logging
+
+from core.database import init_db
+from core.websocket_manager import WebSocketManager
+from api.routes import tickets, metrics, agents, webhooks, logs, manual, developer_debug
+from services.agent_orchestrator import AgentOrchestrator
+from services.ticket_poller import TicketPoller
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global instances
-connection_manager = ConnectionManager()
-ticket_poller = None
+websocket_manager = WebSocketManager()
 agent_orchestrator = None
+ticket_poller = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global agent_orchestrator, ticket_poller
+    
     # Startup
-    logger.info("=== APPLICATION STARTUP ===")
+    logger.info("Starting AI Agent System...")
     await init_db()
-    logger.info("Database initialized")
     
-    global ticket_poller, agent_orchestrator
-    logger.info("Creating TicketPoller instance...")
+    # Initialize and start services
+    agent_orchestrator = AgentOrchestrator(websocket_manager)
     ticket_poller = TicketPoller()
-    logger.info("TicketPoller created successfully")
-    
-    logger.info("Creating AgentOrchestrator instance...")
-    agent_orchestrator = AgentOrchestrator()
-    logger.info("AgentOrchestrator created successfully")
     
     # Start background tasks
-    logger.info("Starting ticket polling task...")
-    polling_task = asyncio.create_task(ticket_poller.start_polling())
-    logger.info(f"Ticket polling task created: {polling_task}")
+    orchestrator_task = asyncio.create_task(agent_orchestrator.start())
+    poller_task = asyncio.create_task(ticket_poller.start())
     
-    logger.info("Starting agent orchestrator task...")
-    orchestrator_task = asyncio.create_task(agent_orchestrator.start_processing())
-    logger.info(f"Agent orchestrator task created: {orchestrator_task}")
-    
-    logger.info("=== APPLICATION STARTUP COMPLETE ===")
+    logger.info("AI Agent System started successfully")
     
     yield
     
     # Shutdown
-    logger.info("=== APPLICATION SHUTDOWN ===")
-    if ticket_poller:
-        logger.info("Stopping ticket poller...")
-        await ticket_poller.stop_polling()
+    logger.info("Shutting down AI Agent System...")
     if agent_orchestrator:
-        logger.info("Stopping agent orchestrator...")
-        await agent_orchestrator.stop_processing()
-    logger.info("=== APPLICATION SHUTDOWN COMPLETE ===")
+        await agent_orchestrator.stop()
+    if ticket_poller:
+        await ticket_poller.stop()
+    
+    # Cancel background tasks
+    orchestrator_task.cancel()
+    poller_task.cancel()
+    
+    try:
+        await asyncio.gather(orchestrator_task, poller_task, return_exceptions=True)
+    except asyncio.CancelledError:
+        pass
+    
+    logger.info("AI Agent System shut down")
 
 app = FastAPI(
     title="AI Agent System",
-    description="Autonomous AI system for bug fixing and code generation",
+    description="Production-ready autonomous bug fixing and code generation system",
     version="1.0.0",
     lifespan=lifespan
 )
 
+# CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include API routes
+# Include routers
 app.include_router(tickets.router, prefix="/api/tickets", tags=["tickets"])
-app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(metrics.router, prefix="/api/metrics", tags=["metrics"])
-app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
+app.include_router(agents.router, prefix="/api/agents", tags=["agents"])
 app.include_router(webhooks.router, prefix="/api/webhooks", tags=["webhooks"])
+app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(manual.router, prefix="/api/manual", tags=["manual"])
+app.include_router(developer_debug.router, prefix="/api/developer-debug", tags=["developer-debug"])
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await connection_manager.connect(websocket)
+    await websocket_manager.connect(websocket)
     try:
         while True:
+            # Keep connection alive
             await websocket.receive_text()
     except WebSocketDisconnect:
-        connection_manager.disconnect(websocket)
+        websocket_manager.disconnect(websocket)
 
 @app.get("/")
 async def root():
-    return {"message": "AI Agent System API", "status": "running"}
+    return {
+        "message": "AI Agent System API",
+        "status": "running",
+        "version": "1.0.0"
+    }
 
 @app.get("/health")
 async def health_check():
@@ -101,10 +108,7 @@ async def health_check():
         "status": "healthy",
         "services": {
             "database": "connected",
-            "ticket_poller": "running" if ticket_poller and ticket_poller.running else "stopped",
-            "agent_orchestrator": "running" if agent_orchestrator and agent_orchestrator.running else "stopped"
+            "orchestrator": "running" if agent_orchestrator else "stopped",
+            "poller": "running" if ticket_poller else "stopped"
         }
     }
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)

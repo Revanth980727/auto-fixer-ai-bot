@@ -39,6 +39,8 @@ class DeveloperAgent(BaseAgent):
             raise Exception("No source files available for patch generation")
         
         self.log_execution(execution_id, f"Processing {len(source_files)} source files for intelligent patch generation")
+        self.log_execution(execution_id, f"DEBUG: Planner data keys: {list(planner_data.keys())}")
+        self.log_execution(execution_id, f"DEBUG: Source files: {[f['path'] for f in source_files]}")
         
         # Add processing delay for realistic timing
         await asyncio.sleep(3)
@@ -56,11 +58,12 @@ class DeveloperAgent(BaseAgent):
             if patch_data:
                 patches.append(patch_data)
                 self._save_patch_attempt(ticket, execution_id, patch_data)
+                self.log_execution(execution_id, f"SUCCESS: Generated valid patch for {file_info['path']}")
             else:
-                self.log_execution(execution_id, f"Failed to generate valid patch for {file_info['path']}")
+                self.log_execution(execution_id, f"FAILED: Could not generate valid patch for {file_info['path']}")
         
         if not patches:
-            self.log_execution(execution_id, "Failed to generate any valid patches")
+            self.log_execution(execution_id, "CRITICAL: Failed to generate any valid patches for any file")
             raise Exception("No valid patches could be generated")
         
         result = {
@@ -70,12 +73,16 @@ class DeveloperAgent(BaseAgent):
             "intelligent_patching": True
         }
         
-        self.log_execution(execution_id, f"Generated {len(patches)} intelligent patches successfully")
+        self.log_execution(execution_id, f"COMPLETED: Generated {len(patches)} intelligent patches successfully")
         return result
     
     async def _generate_intelligent_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
         """Generate an intelligent patch with proper diff format and validation"""
         try:
+            self.log_execution(execution_id, f"DEBUG: Starting patch generation for {file_info['path']}")
+            self.log_execution(execution_id, f"DEBUG: File content length: {len(file_info['content'])} characters")
+            self.log_execution(execution_id, f"DEBUG: Analysis root cause: {analysis.get('root_cause', 'Not provided')}")
+            
             patch_prompt = f"""
 You are an expert software engineer. Generate a PRECISE UNIFIED DIFF PATCH to fix this bug.
 
@@ -118,31 +125,54 @@ Please provide your solution in JSON format:
 CRITICAL: The patch_content must be a valid unified diff that can be applied with git apply or patch command.
 """
             
+            self.log_execution(execution_id, f"DEBUG: Sending patch generation request to OpenAI for {file_info['path']}")
             response = await self.openai_client.complete_chat([
                 {"role": "system", "content": "You are an expert software engineer. Generate precise unified diff patches that can be applied automatically. Focus on minimal, targeted changes."},
                 {"role": "user", "content": patch_prompt}
             ])
             
-            patch_data = json.loads(response)
+            self.log_execution(execution_id, f"DEBUG: OpenAI response received for {file_info['path']}, length: {len(response)} characters")
+            self.log_execution(execution_id, f"DEBUG: OpenAI response preview: {response[:200]}...")
+            
+            try:
+                patch_data = json.loads(response)
+                self.log_execution(execution_id, f"DEBUG: Successfully parsed JSON response for {file_info['path']}")
+                self.log_execution(execution_id, f"DEBUG: Patch data keys: {list(patch_data.keys())}")
+            except json.JSONDecodeError as e:
+                self.log_execution(execution_id, f"ERROR: JSON parsing failed for {file_info['path']}: {e}")
+                self.log_execution(execution_id, f"ERROR: Raw OpenAI response: {response}")
+                return None
+            
             patch_data["target_file"] = file_info["path"]
             patch_data["file_size"] = len(file_info["content"])
             
             # Validate patch format and content
+            self.log_execution(execution_id, f"DEBUG: Starting patch validation for {file_info['path']}")
             validation_result = self._validate_patch_format(patch_data, file_info)
             if not validation_result["valid"]:
-                self.log_execution(execution_id, f"Invalid patch format for {file_info['path']}: {validation_result['error']}")
+                self.log_execution(execution_id, f"ERROR: Patch validation failed for {file_info['path']}: {validation_result['error']}")
+                self.log_execution(execution_id, f"ERROR: Invalid patch content preview: {patch_data.get('patch_content', 'No patch content')[:200]}...")
                 return None
+            
+            self.log_execution(execution_id, f"DEBUG: Patch validation passed for {file_info['path']}")
             
             # Test patch application locally
+            self.log_execution(execution_id, f"DEBUG: Starting patch application test for {file_info['path']}")
             if not self._test_patch_application(patch_data, file_info):
-                self.log_execution(execution_id, f"Patch failed local testing for {file_info['path']}")
+                self.log_execution(execution_id, f"ERROR: Patch application test failed for {file_info['path']}")
                 return None
             
-            self.log_execution(execution_id, f"Intelligent patch generated for {file_info['path']} with confidence {patch_data.get('confidence_score', 0)}")
+            self.log_execution(execution_id, f"DEBUG: Patch application test passed for {file_info['path']}")
+            
+            confidence = patch_data.get('confidence_score', 0)
+            self.log_execution(execution_id, f"SUCCESS: Intelligent patch generated for {file_info['path']} with confidence {confidence}")
             return patch_data
             
-        except (json.JSONDecodeError, Exception) as e:
-            self.log_execution(execution_id, f"Error generating intelligent patch for {file_info['path']}: {e}")
+        except Exception as e:
+            self.log_execution(execution_id, f"ERROR: Exception in patch generation for {file_info['path']}: {str(e)}")
+            self.log_execution(execution_id, f"ERROR: Exception type: {type(e).__name__}")
+            import traceback
+            self.log_execution(execution_id, f"ERROR: Full traceback: {traceback.format_exc()}")
             return None
     
     def _validate_patch_format(self, patch_data: Dict, file_info: Dict) -> Dict[str, Any]:
@@ -155,11 +185,11 @@ CRITICAL: The patch_content must be a valid unified diff that can be applied wit
             
             # Check for unified diff headers
             if not ("---" in patch_content and "+++" in patch_content):
-                return {"valid": False, "error": "Missing unified diff headers"}
+                return {"valid": False, "error": "Missing unified diff headers (--- and +++)"}
             
             # Check for hunk headers
             if "@@" not in patch_content:
-                return {"valid": False, "error": "Missing hunk headers"}
+                return {"valid": False, "error": "Missing hunk headers (@@)"}
             
             # Validate required fields
             required_fields = ["patched_code", "base_file_hash", "target_file"]
@@ -170,7 +200,7 @@ CRITICAL: The patch_content must be a valid unified diff that can be applied wit
             return {"valid": True}
             
         except Exception as e:
-            return {"valid": False, "error": str(e)}
+            return {"valid": False, "error": f"Validation exception: {str(e)}"}
     
     def _test_patch_application(self, patch_data: Dict, file_info: Dict) -> bool:
         """Test patch application locally to ensure it works"""

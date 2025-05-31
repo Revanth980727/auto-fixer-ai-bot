@@ -1,3 +1,4 @@
+
 import { useState, useEffect } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,6 +11,7 @@ import { MetricsCharts } from '@/components/dashboard/MetricsCharts';
 import { LiveLogs } from '@/components/dashboard/LiveLogs';
 import { SystemHealth } from '@/components/dashboard/SystemHealth';
 import { PipelineMonitor } from '@/components/dashboard/PipelineMonitor';
+import { DeveloperDebug } from '@/components/dashboard/DeveloperDebug';
 import { WebSocketProvider } from '@/components/providers/WebSocketProvider';
 import { Activity, AlertCircle, CheckCircle, Clock, TrendingUp, Shield } from 'lucide-react';
 import { apiUrl } from '@/config/api';
@@ -155,12 +157,13 @@ const Dashboard = () => {
 
           {/* Main Content Tabs */}
           <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-4">
-            <TabsList className="grid w-full grid-cols-6">
+            <TabsList className="grid w-full grid-cols-7">
               <TabsTrigger value="overview">Overview</TabsTrigger>
               <TabsTrigger value="health">Health</TabsTrigger>
               <TabsTrigger value="pipelines">Pipelines</TabsTrigger>
               <TabsTrigger value="tickets">Tickets</TabsTrigger>
               <TabsTrigger value="agents">Agents</TabsTrigger>
+              <TabsTrigger value="debug">Debug</TabsTrigger>
               <TabsTrigger value="analytics">Analytics</TabsTrigger>
             </TabsList>
 
@@ -217,6 +220,10 @@ const Dashboard = () => {
 
             <TabsContent value="agents">
               <AgentStatus detailed={true} />
+            </TabsContent>
+
+            <TabsContent value="debug">
+              <DeveloperDebug />
             </TabsContent>
 
             <TabsContent value="analytics">
