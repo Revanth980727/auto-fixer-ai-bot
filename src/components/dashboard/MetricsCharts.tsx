@@ -1,3 +1,4 @@
+
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { LineChart, Line, BarChart, Bar, PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, AreaChart, Area } from 'recharts';
@@ -168,7 +169,7 @@ export const MetricsCharts = () => {
                 const trendData = performanceTrends[metric];
                 
                 return (
-                  <div key={metric} className="p-4 border rounded-lg">
+                  <div key={String(metric)} className="p-4 border rounded-lg">
                     <h4 className="font-medium text-sm mb-2">{String(metric).replace(/_/g, ' ')}</h4>
                     <div className="text-2xl font-bold">{trendData.avg_value?.toFixed(2) || 'N/A'}</div>
                     <div className={`text-sm ${
