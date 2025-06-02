@@ -13,6 +13,55 @@ class RepositoryAnalyzer:
         self.github_client = GitHubClient()
         self.file_selector = IntelligentFileSelector()
     
+    async def analyze_repository(self) -> Dict[str, Any]:
+        """General repository analysis for initial system setup"""
+        logger.info("🔍 Starting general repository analysis")
+        
+        try:
+            # Use intelligent file selection with generic parameters
+            selected_files = await self.file_selector.select_relevant_files(
+                ticket_title="General Repository Analysis",
+                ticket_description="Initial system repository scan",
+                error_trace=""
+            )
+            
+            if not selected_files:
+                logger.warning("⚠️ No files found during general repository analysis")
+                return {
+                    "source_files": [],
+                    "analysis_summary": "No source files found in repository",
+                    "github_access_failed": True,
+                    "repository_structure": "Unknown",
+                    "total_files_analyzed": 0
+                }
+            
+            # Generate general analysis summary
+            analysis_summary = self._generate_general_analysis_summary(selected_files)
+            
+            result = {
+                "source_files": selected_files,
+                "analysis_summary": analysis_summary,
+                "total_files_analyzed": len(selected_files),
+                "github_access_failed": False,
+                "repository_structure": self._detect_repository_structure(selected_files),
+                "file_types_found": self._analyze_file_types(selected_files),
+                "target_branch": config.github_target_branch
+            }
+            
+            logger.info(f"✅ General repository analysis completed: {len(selected_files)} files analyzed")
+            return result
+            
+        except Exception as e:
+            logger.error(f"❌ General repository analysis failed: {e}")
+            return {
+                "source_files": [],
+                "analysis_summary": f"Repository analysis failed: {str(e)}",
+                "github_access_failed": True,
+                "repository_structure": "Unknown",
+                "total_files_analyzed": 0,
+                "error": str(e)
+            }
+    
     async def analyze_repository_for_ticket(self, ticket_title: str, ticket_description: str, error_trace: str = "") -> Dict[str, Any]:
         """Analyze repository with intelligent file selection for a specific ticket"""
         logger.info(f"🔍 Starting intelligent repository analysis for: {ticket_title}")
@@ -61,6 +110,35 @@ class RepositoryAnalyzer:
                 "error": str(e)
             }
     
+    def _generate_general_analysis_summary(self, files: List[Dict]) -> str:
+        """Generate a general repository analysis summary"""
+        total_lines = sum(len(f['content'].splitlines()) for f in files)
+        total_chars = sum(len(f['content']) for f in files)
+        
+        file_info = []
+        for f in files:
+            lines = len(f['content'].splitlines())
+            score = f.get('relevance_score', 0)
+            file_info.append(f"- {f['path']}: {lines} lines (score: {score:.1f})")
+        
+        summary = f"""
+General Repository Analysis
+
+Selected Files ({len(files)}):
+{chr(10).join(file_info)}
+
+Total Code: {total_lines} lines, {total_chars} characters
+Target Branch: {config.github_target_branch}
+Selection Method: Intelligent file selection
+
+Repository Overview:
+- Analysis includes {config.max_source_files} most relevant files
+- Files selected based on common patterns and importance
+- Ready for ticket-specific analysis and processing
+"""
+        
+        return summary.strip()
+    
     def _generate_analysis_summary(self, files: List[Dict], ticket_title: str, error_trace: str) -> str:
         """Generate a comprehensive analysis summary"""
         total_lines = sum(len(f['content'].splitlines()) for f in files)
@@ -93,6 +171,30 @@ Analysis Strategy:
             summary += f"\nError Context: Available and used for file selection"
         
         return summary.strip()
+    
+    def _detect_repository_structure(self, files: List[Dict]) -> str:
+        """Detect the general structure/type of repository"""
+        file_paths = [f['path'] for f in files]
+        
+        # Check for common patterns
+        if any('requirements.txt' in path or path.endswith('.py') for path in file_paths):
+            return "Python"
+        elif any(path.endswith(('.js', '.ts', '.jsx', '.tsx')) for path in file_paths):
+            return "JavaScript/TypeScript"
+        elif any(path.endswith('.java') for path in file_paths):
+            return "Java"
+        elif any(path.endswith(('.cpp', '.c', '.h')) for path in file_paths):
+            return "C/C++"
+        else:
+            return "Mixed/Unknown"
+    
+    def _analyze_file_types(self, files: List[Dict]) -> Dict[str, int]:
+        """Analyze the distribution of file types"""
+        file_types = {}
+        for f in files:
+            ext = f['path'].split('.')[-1] if '.' in f['path'] else 'no_extension'
+            file_types[ext] = file_types.get(ext, 0) + 1
+        return file_types
     
     # Legacy method for backward compatibility
     async def get_source_files(self, max_files: int = None) -> List[Dict[str, Any]]:
