@@ -1,4 +1,3 @@
-
 from agents.base_agent import BaseAgent
 from core.models import Ticket, AgentExecution, AgentType, PatchAttempt
 from core.database import get_sync_db
@@ -50,17 +49,9 @@ class QAAgent(BaseAgent):
             # Use circuit breaker for GitHub operations
             github_breaker = metrics_collector.get_circuit_breaker("github")
             
-            try:
-                # Create test branch for intelligent patch application
-                test_branch = await github_breaker.call(
-                    self.patch_service.create_smart_branch, "main", ticket.id
-                )
-                self.log_execution(execution_id, f"Created test branch: {test_branch}")
-            except Exception as e:
-                self.log_execution(execution_id, f"Failed to create test branch: {e}")
-                result = await self._fallback_validation(patches, execution_id, ticket.id)
-                metrics_collector.record_agent_execution("qa", time.time() - start_time, False, ticket.id)
-                return result
+            # Get the configured target branch instead of creating a new one
+            target_branch = self.patch_service.get_target_branch()
+            self.log_execution(execution_id, f"Using configured target branch: {target_branch}")
             
             # Validate repository state before applying patches
             file_paths = [patch.get("target_file") for patch in patches if patch.get("target_file")]
@@ -75,7 +66,7 @@ class QAAgent(BaseAgent):
             # Apply patches intelligently with monitoring
             try:
                 patch_start_time = time.time()
-                patch_results = await self.patch_service.apply_patches_intelligently(patches, test_branch)
+                patch_results = await self.patch_service.apply_patches_intelligently(patches, ticket.id)
                 patch_duration = time.time() - patch_start_time
                 
                 metrics_collector.record_github_operation("patch_application", patch_duration, True)
@@ -93,7 +84,7 @@ class QAAgent(BaseAgent):
                     "failed_patches": len(patch_results["failed_patches"]),
                     "conflicts_detected": len(patch_results["conflicts_detected"]),
                     "files_modified": patch_results["files_modified"],
-                    "test_branch": test_branch,
+                    "target_branch": target_branch,
                     "ready_for_deployment": successful_patches > 0 and len(patch_results["conflicts_detected"]) == 0,
                     "patch_application_results": patch_results,
                     "validated_patches": patch_results["successful_patches"],

@@ -17,7 +17,7 @@ class PatchService:
         self.target_branch = config.github_target_branch
     
     async def apply_patches_intelligently(self, patches: List[Dict[str, Any]], ticket_id: int) -> Dict[str, Any]:
-        """Apply patches to the configured target branch with intelligent conflict detection"""
+        """Apply patches directly to the configured target branch with intelligent conflict detection"""
         results = {
             "successful_patches": [],
             "failed_patches": [],
@@ -26,7 +26,7 @@ class PatchService:
             "target_branch": self.target_branch
         }
         
-        logger.info(f"🔧 Applying {len(patches)} patches to branch: {self.target_branch}")
+        logger.info(f"🔧 Applying {len(patches)} patches directly to target branch: {self.target_branch}")
         
         # Validate target branch exists
         if not await self._validate_target_branch():
@@ -277,15 +277,9 @@ class PatchService:
             return f"Apply {len(patches)} fixes to {file_path}"
     
     async def create_smart_branch(self, base_branch: str, ticket_id: int) -> str:
-        """Create a branch with intelligent naming"""
-        branch_name = f"ai-fix-ticket-{ticket_id}-{hashlib.md5(str(ticket_id).encode()).hexdigest()[:8]}"
-        
-        success = await self.github_client.create_branch(branch_name, base_branch)
-        if success:
-            logger.info(f"Created smart branch: {branch_name}")
-            return branch_name
-        else:
-            raise PatchApplicationError(f"Failed to create branch: {branch_name}")
+        """Create a branch with intelligent naming - deprecated, use target branch directly"""
+        logger.warning("⚠️ create_smart_branch is deprecated - using target branch directly")
+        return self.target_branch
     
     async def validate_repository_state(self, file_paths: List[str]) -> Dict[str, Any]:
         """Validate repository state on target branch before applying patches"""
