@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     
     # Start background tasks
     orchestrator_task = asyncio.create_task(agent_orchestrator.start_processing())
-    poller_task = asyncio.create_task(ticket_poller.start())
+    poller_task = asyncio.create_task(ticket_poller.start_polling())
     
     logger.info("AI Agent System started successfully")
     
@@ -46,7 +46,7 @@ async def lifespan(app: FastAPI):
     if agent_orchestrator:
         await agent_orchestrator.stop_processing()
     if ticket_poller:
-        await ticket_poller.stop()
+        await ticket_poller.stop_polling()
     
     # Cancel background tasks
     orchestrator_task.cancel()
