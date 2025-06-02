@@ -1,4 +1,3 @@
-
 import { useQuery } from '@tanstack/react-query';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
@@ -8,7 +7,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { ChevronDown, Code, FileText, AlertCircle, CheckCircle, Clock, Timer } from 'lucide-react';
 import { apiUrl } from '@/config/api';
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useToast } from '@/hooks/use-toast';
 
 interface PatchAttempt {
@@ -55,17 +54,9 @@ export const DeveloperDebug = () => {
       return data;
     },
     refetchInterval: 5000,
-    onError: (error) => {
-      console.error('❌ Developer debug query error:', error);
-      toast({
-        title: "Error Loading Debug Data",
-        description: "Failed to load developer execution data. Check console for details.",
-        variant: "destructive",
-      });
-    }
   });
 
-  const { data: executionDetail, isLoading: detailLoading } = useQuery({
+  const { data: executionDetail, isLoading: detailLoading, error: detailError } = useQuery({
     queryKey: ['developer-execution-detail', selectedExecution],
     queryFn: async (): Promise<DeveloperExecution> => {
       console.log('🔍 Fetching execution detail for:', selectedExecution);
@@ -79,15 +70,30 @@ export const DeveloperDebug = () => {
       return data;
     },
     enabled: !!selectedExecution,
-    onError: (error) => {
-      console.error('❌ Execution detail error:', error);
+  });
+
+  // Handle errors with useEffect
+  useEffect(() => {
+    if (error) {
+      console.error('❌ Developer debug query error:', error);
+      toast({
+        title: "Error Loading Debug Data",
+        description: "Failed to load developer execution data. Check console for details.",
+        variant: "destructive",
+      });
+    }
+  }, [error, toast]);
+
+  useEffect(() => {
+    if (detailError) {
+      console.error('❌ Execution detail error:', detailError);
       toast({
         title: "Error Loading Execution Detail",
         description: "Failed to load execution details. Check console for details.",
         variant: "destructive",
       });
     }
-  });
+  }, [detailError, toast]);
 
   const getStatusIcon = (status: string) => {
     switch (status) {
