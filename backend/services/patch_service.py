@@ -1,8 +1,8 @@
-
 import re
 import hashlib
 from typing import Dict, Any, List, Optional, Tuple
 from services.github_client import GitHubClient
+from core.config import config
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,22 +14,35 @@ class PatchApplicationError(Exception):
 class PatchService:
     def __init__(self):
         self.github_client = GitHubClient()
+        self.target_branch = config.github_target_branch
     
-    async def apply_patches_intelligently(self, patches: List[Dict[str, Any]], branch_name: str) -> Dict[str, Any]:
-        """Apply patches with intelligent conflict detection and resolution"""
+    async def apply_patches_intelligently(self, patches: List[Dict[str, Any]], ticket_id: int) -> Dict[str, Any]:
+        """Apply patches to the configured target branch with intelligent conflict detection"""
         results = {
             "successful_patches": [],
             "failed_patches": [],
             "conflicts_detected": [],
-            "files_modified": []
+            "files_modified": [],
+            "target_branch": self.target_branch
         }
+        
+        logger.info(f"🔧 Applying {len(patches)} patches to branch: {self.target_branch}")
+        
+        # Validate target branch exists
+        if not await self._validate_target_branch():
+            logger.error(f"❌ Target branch {self.target_branch} does not exist or is not accessible")
+            return {
+                **results,
+                "error": f"Target branch {self.target_branch} not accessible",
+                "branch_validation_failed": True
+            }
         
         # Group patches by file for atomic operations
         patches_by_file = self._group_patches_by_file(patches)
         
         for file_path, file_patches in patches_by_file.items():
             try:
-                result = await self._apply_file_patches(file_path, file_patches, branch_name)
+                result = await self._apply_file_patches(file_path, file_patches, self.target_branch)
                 
                 if result["success"]:
                     results["successful_patches"].extend(result["patches"])
@@ -50,17 +63,40 @@ class PatchService:
         
         return results
     
+    async def _validate_target_branch(self) -> bool:
+        """Validate that the target branch exists and is accessible"""
+        try:
+            # Try to get a file from the target branch
+            test_content = await self.github_client.get_file_content("README.md", self.target_branch)
+            if test_content is not None:
+                logger.info(f"✅ Target branch {self.target_branch} validated successfully")
+                return True
+            
+            # If README.md doesn't exist, try to get repository tree
+            tree = await self.github_client.get_repository_tree(self.target_branch)
+            if tree:
+                logger.info(f"✅ Target branch {self.target_branch} validated via tree")
+                return True
+            
+            logger.warning(f"⚠️ Target branch {self.target_branch} may not exist")
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Branch validation failed: {e}")
+            return False
+    
     async def _apply_file_patches(self, file_path: str, patches: List[Dict], branch_name: str) -> Dict[str, Any]:
-        """Apply multiple patches to a single file with conflict detection"""
-        logger.info(f"Applying {len(patches)} patches to {file_path}")
+        """Apply multiple patches to a single file with enhanced validation"""
+        logger.info(f"🔧 Applying {len(patches)} patches to {file_path} on branch {branch_name}")
         
         # Get current file content and SHA
         current_content = await self.github_client.get_file_content(file_path, branch_name)
         if current_content is None:
+            logger.warning(f"⚠️ File {file_path} not found on branch {branch_name}")
             return {
                 "success": False,
                 "patches": patches,
-                "error": f"File {file_path} not found"
+                "error": f"File {file_path} not found on branch {branch_name}"
             }
         
         # Calculate current file hash
@@ -91,9 +127,9 @@ class PatchService:
                 if result["success"]:
                     modified_content = result["content"]
                     successful_patches.append(patch)
-                    logger.info(f"Successfully applied patch to {file_path}")
+                    logger.info(f"✅ Successfully applied patch to {file_path}")
                 else:
-                    logger.warning(f"Failed to apply patch to {file_path}: {result['error']}")
+                    logger.warning(f"❌ Failed to apply patch to {file_path}: {result['error']}")
                     return {
                         "success": False,
                         "patches": patches,
@@ -101,7 +137,7 @@ class PatchService:
                     }
                     
             except Exception as e:
-                logger.error(f"Exception applying patch to {file_path}: {e}")
+                logger.error(f"💥 Exception applying patch to {file_path}: {e}")
                 return {
                     "success": False,
                     "patches": patches,
@@ -117,7 +153,7 @@ class PatchService:
                 "error": f"Validation failed: {validation_result['error']}"
             }
         
-        # Commit the changes
+        # Commit the changes to target branch
         commit_message = self._generate_commit_message(file_path, successful_patches)
         commit_success = await self.github_client.commit_file(
             file_path, modified_content, commit_message, branch_name
@@ -127,7 +163,7 @@ class PatchService:
             return {
                 "success": False,
                 "patches": patches,
-                "error": "Failed to commit changes to GitHub"
+                "error": f"Failed to commit changes to {branch_name}"
             }
         
         return {
@@ -252,15 +288,16 @@ class PatchService:
             raise PatchApplicationError(f"Failed to create branch: {branch_name}")
     
     async def validate_repository_state(self, file_paths: List[str]) -> Dict[str, Any]:
-        """Validate repository state before applying patches"""
+        """Validate repository state on target branch before applying patches"""
         validation_result = {
             "valid": True,
             "missing_files": [],
-            "file_states": {}
+            "file_states": {},
+            "target_branch": self.target_branch
         }
         
         for file_path in file_paths:
-            content = await self.github_client.get_file_content(file_path)
+            content = await self.github_client.get_file_content(file_path, self.target_branch)
             if content is None:
                 validation_result["missing_files"].append(file_path)
                 validation_result["valid"] = False
@@ -272,3 +309,7 @@ class PatchService:
                 }
         
         return validation_result
+    
+    def get_target_branch(self) -> str:
+        """Get the configured target branch"""
+        return self.target_branch

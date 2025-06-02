@@ -25,6 +25,7 @@ class Config:
         self.github_token = os.getenv("GITHUB_TOKEN")
         self.github_repo_owner = os.getenv("GITHUB_REPO_OWNER")
         self.github_repo_name = os.getenv("GITHUB_REPO_NAME")
+        self.github_target_branch = os.getenv("GITHUB_TARGET_BRANCH", "main")
         
         # Debug logging for critical values
         logger.info(f"Config loaded - JIRA_BASE_URL: {self.jira_base_url}")
@@ -38,6 +39,7 @@ class Config:
         logger.info(f"Config loaded - GITHUB_TOKEN present: {'Yes' if self.github_token else 'No'}")
         logger.info(f"Config loaded - GITHUB_REPO_OWNER: {self.github_repo_owner or 'Not set'}")
         logger.info(f"Config loaded - GITHUB_REPO_NAME: {self.github_repo_name or 'Not set'}")
+        logger.info(f"Config loaded - GITHUB_TARGET_BRANCH: {self.github_target_branch}")
         
         # JIRA Configuration
         self.jira_issue_types = self._parse_list(os.getenv("JIRA_ISSUE_TYPES", "Bug"))
@@ -53,6 +55,9 @@ class Config:
         self.agent_poll_interval = int(os.getenv("AGENT_POLL_INTERVAL", "60"))
         
         logger.info(f"Config loaded - AGENT_POLL_INTERVAL: {self.agent_poll_interval}")
+        
+        # File Selection Configuration
+        self.max_source_files = int(os.getenv("MAX_SOURCE_FILES", "5"))
         
         # Priority Scoring Configuration
         self.priority_weights = {
@@ -82,60 +87,7 @@ class Config:
         # Validate and warn about missing configurations
         self._validate_and_warn_configuration()
     
-    def _parse_list(self, value: str) -> List[str]:
-        """Parse comma-separated string into list"""
-        if not value:
-            return []
-        return [item.strip() for item in value.split(',') if item.strip()]
-    
-    def _validate_and_warn_configuration(self):
-        """Validate configuration and log warnings for missing items"""
-        warnings = []
-        
-        if not self.openai_api_key:
-            warnings.append("OPENAI_API_KEY is not set - AI agents will not function")
-        
-        if not self.jira_base_url or not self.jira_api_token:
-            warnings.append("JIRA configuration incomplete - ticket integration will not work")
-        
-        if not self.github_token or not self.github_repo_owner or not self.github_repo_name:
-            warnings.append("GitHub configuration incomplete - will operate in degraded mode with mock content")
-        
-        for warning in warnings:
-            logger.warning(f"Configuration Warning: {warning}")
-        
-        if warnings:
-            logger.warning("Some features may not work properly due to missing configuration")
-    
-    def get_jira_jql(self) -> str:
-        """Generate JQL query based on configuration"""
-        issue_types = "','".join(self.jira_issue_types)
-        statuses = "','".join(self.jira_statuses)
-        
-        jql = f"project = {self.jira_project_key}"
-        
-        if issue_types:
-            jql += f" AND issuetype IN ('{issue_types}')"
-        
-        if statuses:
-            jql += f" AND status IN ('{statuses}')"
-        
-        return jql
-    
-    def validate_required_config(self) -> List[str]:
-        """Validate that required configuration is present"""
-        missing = []
-        
-        if not self.openai_api_key:
-            missing.append("OPENAI_API_KEY")
-        
-        if not self.jira_base_url:
-            missing.append("JIRA_BASE_URL")
-        
-        if not self.jira_project_key:
-            missing.append("JIRA_PROJECT_KEY")
-        
-        return missing
+    # ... keep existing code (_parse_list, _validate_and_warn_configuration, get_jira_jql, validate_required_config methods)
     
     def get_github_status(self) -> Dict[str, Any]:
         """Get GitHub configuration status"""
@@ -144,6 +96,7 @@ class Config:
             "has_token": bool(self.github_token),
             "has_repo_owner": bool(self.github_repo_owner),
             "has_repo_name": bool(self.github_repo_name),
+            "target_branch": self.github_target_branch,
             "repo_full_name": f"{self.github_repo_owner}/{self.github_repo_name}" if self.github_repo_owner and self.github_repo_name else None
         }
     
@@ -157,6 +110,7 @@ class Config:
             "jira_issue_types": self.jira_issue_types,
             "jira_statuses": self.jira_statuses,
             "github_status": self.get_github_status(),
+            "max_source_files": self.max_source_files,
             "agent_intervals": {
                 "process": self.agent_process_interval,
                 "intake": self.agent_intake_interval,

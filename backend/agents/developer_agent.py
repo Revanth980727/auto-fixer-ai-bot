@@ -19,8 +19,8 @@ class DeveloperAgent(BaseAgent):
         self.github_client = GitHubClient()
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate intelligent code patches with enhanced error handling and timeouts"""
-        self.log_execution(execution_id, "🚀 Starting enhanced intelligent code generation process")
+        """Generate intelligent code patches with enhanced error handling and full file context"""
+        self.log_execution(execution_id, "🚀 Starting enhanced intelligent code generation with full context")
         
         if not context:
             self.log_execution(execution_id, "❌ No context provided - developer agent requires planner analysis")
@@ -38,38 +38,39 @@ class DeveloperAgent(BaseAgent):
             self.log_execution(execution_id, "❌ No source files available - cannot generate patches")
             raise Exception("No source files available for patch generation")
         
-        self.log_execution(execution_id, f"📁 Processing {len(source_files)} source files for intelligent patch generation")
-        self.log_execution(execution_id, f"🔍 DEBUG: Planner data keys: {list(planner_data.keys())}")
-        self.log_execution(execution_id, f"📂 DEBUG: Source files: {[f['path'] for f in source_files]}")
+        self.log_execution(execution_id, f"📁 Processing {len(source_files)} intelligently selected files")
+        self.log_execution(execution_id, f"🎯 Files selected: {[f['path'] for f in source_files]}")
+        self.log_execution(execution_id, f"🔍 Total code size: {sum(len(f['content']) for f in source_files)} characters")
         
-        # Generate intelligent patches for each source file with progress tracking
+        # Generate intelligent patches with full file context
         patches = []
         total_files = len(source_files)
         
         for i, file_info in enumerate(source_files, 1):
-            self.log_execution(execution_id, f"🔧 Generating patch {i}/{total_files} for {file_info['path']}")
+            self.log_execution(execution_id, f"🔧 Generating enhanced patch {i}/{total_files} for {file_info['path']}")
+            self.log_execution(execution_id, f"📊 File relevance score: {file_info.get('relevance_score', 'N/A')}")
             
             # Add file state tracking
             file_hash = hashlib.sha256(file_info['content'].encode()).hexdigest()
             file_info['hash'] = file_hash
             
             try:
-                # Use timeout for patch generation
+                # Use enhanced patch generation with full context
                 patch_data = await asyncio.wait_for(
-                    self._generate_intelligent_patch(ticket, file_info, planner_data, execution_id),
-                    timeout=120.0  # 2 minute timeout per file
+                    self._generate_enhanced_patch(ticket, file_info, planner_data, execution_id),
+                    timeout=180.0  # 3 minute timeout for complex analysis
                 )
                 
                 if patch_data:
                     patches.append(patch_data)
                     # Save patch with enhanced error handling
                     await self._save_patch_attempt_safely(ticket, execution_id, patch_data)
-                    self.log_execution(execution_id, f"✅ SUCCESS: Generated valid patch for {file_info['path']}")
+                    self.log_execution(execution_id, f"✅ SUCCESS: Generated enhanced patch for {file_info['path']}")
                 else:
                     self.log_execution(execution_id, f"❌ FAILED: Could not generate valid patch for {file_info['path']}")
                     
             except asyncio.TimeoutError:
-                self.log_execution(execution_id, f"⏰ TIMEOUT: Patch generation for {file_info['path']} exceeded 2 minutes")
+                self.log_execution(execution_id, f"⏰ TIMEOUT: Patch generation for {file_info['path']} exceeded 3 minutes")
                 continue
             except Exception as e:
                 self.log_execution(execution_id, f"💥 ERROR: Exception generating patch for {file_info['path']}: {str(e)}")
@@ -84,79 +85,95 @@ class DeveloperAgent(BaseAgent):
             "patches": patches,
             "planner_analysis": planner_data,
             "intelligent_patching": True,
-            "processing_time_info": f"Processed {len(patches)}/{total_files} files successfully"
+            "enhanced_context": True,
+            "processing_time_info": f"Processed {len(patches)}/{total_files} files successfully with full context"
         }
         
-        self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} intelligent patches successfully")
+        self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} enhanced patches successfully")
         return result
     
-    async def _generate_intelligent_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate an intelligent patch with timeout handling and enhanced validation"""
+    async def _generate_enhanced_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
+        """Generate an enhanced patch with full file context and multi-step analysis"""
         try:
-            self.log_execution(execution_id, f"🔄 DEBUG: Starting patch generation for {file_info['path']}")
-            self.log_execution(execution_id, f"📏 DEBUG: File content length: {len(file_info['content'])} characters")
-            self.log_execution(execution_id, f"🔍 DEBUG: Analysis root cause: {analysis.get('root_cause', 'Not provided')}")
+            self.log_execution(execution_id, f"🔄 Starting enhanced patch generation for {file_info['path']}")
+            self.log_execution(execution_id, f"📏 Full file content: {len(file_info['content'])} characters")
             
-            # Enhanced prompt with clearer instructions
+            # Step 1: Analyze the problem with full context
+            analysis_result = await self._analyze_problem_context(ticket, file_info, analysis, execution_id)
+            
+            if not analysis_result:
+                self.log_execution(execution_id, f"❌ Problem analysis failed for {file_info['path']}")
+                return None
+            
+            # Step 2: Generate the fix with enhanced context
             patch_prompt = f"""
-You are an expert software engineer. Generate a PRECISE UNIFIED DIFF PATCH to fix this bug.
+You are an expert software engineer with deep understanding of code architecture and debugging.
 
-BUG REPORT:
+TICKET INFORMATION:
 Title: {ticket.title}
 Description: {ticket.description}
-Error Trace: {ticket.error_trace}
+Error Trace: {ticket.error_trace or 'No error trace provided'}
 
 TARGET FILE: {file_info['path']}
 FILE HASH: {file_info['hash']}
-CURRENT SOURCE CODE:
+FILE SIZE: {len(file_info['content'])} characters
+RELEVANCE SCORE: {file_info.get('relevance_score', 'N/A')}
+
+COMPLETE FILE CONTENT:
 ```
-{file_info['content'][:5000]}  # Truncate very long files
+{file_info['content']}
 ```
 
-ANALYSIS:
+PROBLEM ANALYSIS:
+{analysis_result}
+
+PLANNER CONTEXT:
 Root Cause: {analysis.get('root_cause', 'Unknown')}
 Suggested Approach: {analysis.get('suggested_approach', 'Standard debugging approach')}
 Code Analysis: {analysis.get('code_analysis', 'No specific analysis')}
 
-REQUIREMENTS:
-1. Generate a UNIFIED DIFF PATCH in standard format (use --- and +++ headers)
-2. Only modify the specific lines that fix the bug
-3. Preserve all existing functionality
-4. Make minimal, targeted changes
-5. RESPOND ONLY WITH VALID JSON - no additional text before or after
+REQUIREMENTS FOR FIX:
+1. Generate a PRECISE UNIFIED DIFF PATCH that fixes the specific issue
+2. Consider the ENTIRE file context when making changes
+3. Ensure the fix doesn't break existing functionality
+4. Make minimal but effective changes
+5. Provide comprehensive testing suggestions
+6. Include proper error handling if relevant
 
-JSON RESPONSE FORMAT:
+RESPONSE FORMAT (JSON ONLY):
 {{
     "patch_content": "unified diff format patch with proper headers and line numbers",
     "patched_code": "complete file content after applying the fix",
-    "test_code": "unit tests specific to this fix",
-    "commit_message": "descriptive commit message explaining the fix",
-    "confidence_score": 0.85,
-    "explanation": "detailed explanation of what was changed and why",
+    "test_code": "comprehensive unit tests specific to this fix",
+    "commit_message": "detailed commit message explaining the fix",
+    "confidence_score": 0.95,
+    "explanation": "detailed technical explanation of the problem and solution",
     "lines_changed": ["specific line numbers that were modified"],
     "base_file_hash": "{file_info['hash']}",
-    "patch_type": "unified_diff"
+    "patch_type": "unified_diff",
+    "impact_analysis": "analysis of potential side effects",
+    "validation_steps": ["steps to verify the fix works correctly"]
 }}
 
-CRITICAL: Response must be valid JSON only. The patch_content must be a valid unified diff.
+CRITICAL: Generate ONLY valid JSON. The patch must be a proper unified diff that can be applied.
 """
             
-            self.log_execution(execution_id, f"🤖 DEBUG: Sending patch generation request to OpenAI for {file_info['path']}")
+            self.log_execution(execution_id, f"🤖 Sending enhanced patch generation request for {file_info['path']}")
             
-            # Use timeout for OpenAI request
+            # Use GPT-4o for better analysis with longer context
             response = await asyncio.wait_for(
                 self.openai_client.complete_chat([
-                    {"role": "system", "content": "You are an expert software engineer. Generate precise unified diff patches in JSON format only. No additional text."},
+                    {"role": "system", "content": "You are an expert software engineer specializing in precise code fixes. Generate only valid JSON responses with proper unified diff patches."},
                     {"role": "user", "content": patch_prompt}
-                ], model="gpt-4o"),  # Use more powerful model for better results
-                timeout=60.0  # 1 minute timeout for OpenAI
+                ], model="gpt-4o"),  # Use most powerful model
+                timeout=120.0  # 2 minute timeout for complex analysis
             )
             
-            self.log_execution(execution_id, f"📨 DEBUG: OpenAI response received for {file_info['path']}, length: {len(response)} characters")
+            self.log_execution(execution_id, f"📨 Enhanced response received for {file_info['path']}, length: {len(response)}")
             
-            # Clean response and parse JSON
+            # Parse and validate response
             try:
-                # Remove any markdown code blocks or extra text
+                # Clean response
                 response = response.strip()
                 if response.startswith('```json'):
                     response = response[7:]
@@ -165,37 +182,108 @@ CRITICAL: Response must be valid JSON only. The patch_content must be a valid un
                 response = response.strip()
                 
                 patch_data = json.loads(response)
-                self.log_execution(execution_id, f"✅ DEBUG: Successfully parsed JSON response for {file_info['path']}")
-                self.log_execution(execution_id, f"🔑 DEBUG: Patch data keys: {list(patch_data.keys())}")
+                self.log_execution(execution_id, f"✅ Successfully parsed enhanced JSON for {file_info['path']}")
+                
             except json.JSONDecodeError as e:
-                self.log_execution(execution_id, f"❌ ERROR: JSON parsing failed for {file_info['path']}: {e}")
-                self.log_execution(execution_id, f"📄 ERROR: Raw OpenAI response: {response[:500]}...")
+                self.log_execution(execution_id, f"❌ JSON parsing failed for {file_info['path']}: {e}")
                 return None
             
+            # Add metadata
             patch_data["target_file"] = file_info["path"]
             patch_data["file_size"] = len(file_info["content"])
+            patch_data["enhanced_generation"] = True
             
-            # Validate patch format and content
-            self.log_execution(execution_id, f"✔️ DEBUG: Starting patch validation for {file_info['path']}")
-            validation_result = self._validate_patch_format(patch_data, file_info)
+            # Enhanced validation
+            validation_result = self._validate_enhanced_patch(patch_data, file_info)
             if not validation_result["valid"]:
-                self.log_execution(execution_id, f"❌ ERROR: Patch validation failed for {file_info['path']}: {validation_result['error']}")
+                self.log_execution(execution_id, f"❌ Enhanced validation failed for {file_info['path']}: {validation_result['error']}")
                 return None
             
-            self.log_execution(execution_id, f"✅ DEBUG: Patch validation passed for {file_info['path']}")
-            
             confidence = patch_data.get('confidence_score', 0)
-            self.log_execution(execution_id, f"🎯 SUCCESS: Intelligent patch generated for {file_info['path']} with confidence {confidence}")
+            self.log_execution(execution_id, f"🎯 Enhanced patch generated for {file_info['path']} with confidence {confidence}")
             return patch_data
             
         except asyncio.TimeoutError:
-            self.log_execution(execution_id, f"⏰ ERROR: OpenAI request timeout for {file_info['path']}")
+            self.log_execution(execution_id, f"⏰ Enhanced generation timeout for {file_info['path']}")
             return None
         except Exception as e:
-            self.log_execution(execution_id, f"💥 ERROR: Exception in patch generation for {file_info['path']}: {str(e)}")
-            import traceback
-            self.log_execution(execution_id, f"📋 ERROR: Full traceback: {traceback.format_exc()}")
+            self.log_execution(execution_id, f"💥 Enhanced generation error for {file_info['path']}: {str(e)}")
             return None
+    
+    async def _analyze_problem_context(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Optional[str]:
+        """Analyze the problem with full file context first"""
+        try:
+            analysis_prompt = f"""
+Analyze this code file in the context of the reported bug. Provide a detailed technical analysis.
+
+BUG REPORT:
+Title: {ticket.title}
+Description: {ticket.description}
+Error Trace: {ticket.error_trace or 'No error trace'}
+
+FILE TO ANALYZE: {file_info['path']}
+COMPLETE CODE:
+```
+{file_info['content']}
+```
+
+Provide a detailed analysis focusing on:
+1. Where exactly the bug might be located in this file
+2. What the root cause appears to be
+3. How this file relates to the error described
+4. What specific lines or functions need attention
+5. Any dependencies or side effects to consider
+
+Respond with a clear technical analysis in plain text (not JSON).
+"""
+            
+            analysis_response = await asyncio.wait_for(
+                self.openai_client.complete_chat([
+                    {"role": "system", "content": "You are a senior software engineer performing detailed code analysis for debugging."},
+                    {"role": "user", "content": analysis_prompt}
+                ], model="gpt-4o"),
+                timeout=60.0
+            )
+            
+            self.log_execution(execution_id, f"🔍 Problem analysis completed for {file_info['path']}")
+            return analysis_response.strip()
+            
+        except Exception as e:
+            self.log_execution(execution_id, f"⚠️ Problem analysis failed for {file_info['path']}: {e}")
+            return None
+    
+    def _validate_enhanced_patch(self, patch_data: Dict, file_info: Dict) -> Dict[str, Any]:
+        """Enhanced validation for patches with additional checks"""
+        try:
+            # Basic validation
+            basic_validation = self._validate_patch_format(patch_data, file_info)
+            if not basic_validation["valid"]:
+                return basic_validation
+            
+            # Additional enhanced validations
+            patch_content = patch_data.get("patch_content", "")
+            patched_code = patch_data.get("patched_code", "")
+            
+            # Check if patched code is significantly different
+            original_lines = set(file_info['content'].splitlines())
+            patched_lines = set(patched_code.splitlines())
+            
+            if len(patched_lines.symmetric_difference(original_lines)) == 0:
+                return {"valid": False, "error": "Patch appears to make no changes"}
+            
+            # Check confidence score
+            confidence = patch_data.get("confidence_score", 0)
+            if confidence < 0.7:
+                return {"valid": False, "error": f"Confidence score too low: {confidence}"}
+            
+            # Validate explanation exists
+            if not patch_data.get("explanation"):
+                return {"valid": False, "error": "Missing explanation field"}
+            
+            return {"valid": True}
+            
+        except Exception as e:
+            return {"valid": False, "error": f"Enhanced validation exception: {str(e)}"}
     
     def _validate_patch_format(self, patch_data: Dict, file_info: Dict) -> Dict[str, Any]:
         """Enhanced validation that the patch is in proper unified diff format"""
@@ -214,7 +302,7 @@ CRITICAL: Response must be valid JSON only. The patch_content must be a valid un
                 return {"valid": False, "error": "Missing hunk headers (@@)"}
             
             # Validate required fields
-            required_fields = ["patched_code", "base_file_hash", "target_file"]
+            required_fields = ["patched_code", "base_file_hash", "target_file", "explanation"]
             for field in required_fields:
                 if not patch_data.get(field):
                     return {"valid": False, "error": f"Missing required field: {field}"}
@@ -229,56 +317,4 @@ CRITICAL: Response must be valid JSON only. The patch_content must be a valid un
         except Exception as e:
             return {"valid": False, "error": f"Validation exception: {str(e)}"}
     
-    async def _save_patch_attempt_safely(self, ticket: Ticket, execution_id: int, patch_data: Dict[str, Any]):
-        """Save patch attempt with enhanced error handling and proper field mapping"""
-        try:
-            with next(get_sync_db()) as db:
-                patch_attempt = PatchAttempt(
-                    ticket_id=ticket.id,
-                    execution_id=execution_id,  # Fixed field name
-                    target_file=patch_data.get("target_file"),
-                    patch_content=patch_data.get("patch_content"),
-                    patched_code=patch_data.get("patched_code"),
-                    test_code=patch_data.get("test_code"),
-                    commit_message=patch_data.get("commit_message"),
-                    confidence_score=patch_data.get("confidence_score", 0.0),
-                    base_file_hash=patch_data.get("base_file_hash"),
-                    patch_type=patch_data.get("patch_type", "unified_diff"),
-                    success=True  # Mark as successful since it passed validation
-                )
-                db.add(patch_attempt)
-                db.commit()
-                logger.info(f"Successfully saved patch attempt for execution {execution_id}")
-        except Exception as e:
-            logger.error(f"Failed to save patch attempt for execution {execution_id}: {e}")
-            # Don't raise exception here to avoid failing the entire process
-
-    def _validate_context(self, context: Dict[str, Any]) -> bool:
-        """Enhanced context validation"""
-        if not context:
-            return False
-        
-        # Check for GitHub access failure
-        if context.get("github_access_failed"):
-            return False
-        
-        # Require planner analysis and source files
-        if "planner_analysis" not in context:
-            return False
-        
-        if "source_files" not in context or not context["source_files"]:
-            return False
-        
-        return True
-
-    def _validate_result(self, result: Dict[str, Any]) -> bool:
-        """Enhanced developer results validation"""
-        patches = result.get("patches", [])
-        return len(patches) > 0 and all(
-            isinstance(patch, dict) and 
-            "patch_content" in patch and 
-            "patched_code" in patch and 
-            "target_file" in patch and
-            "base_file_hash" in patch
-            for patch in patches
-        )
+    # ... keep existing code (_save_patch_attempt_safely, _validate_context, _validate_result methods)

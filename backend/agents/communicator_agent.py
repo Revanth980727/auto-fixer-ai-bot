@@ -1,8 +1,11 @@
+
 from agents.base_agent import BaseAgent
 from core.models import Ticket, AgentExecution, AgentType, PatchAttempt, GitHubPR
 from core.database import get_sync_db
 from services.github_client import GitHubClient
 from services.jira_client import JIRAClient
+from services.patch_service import PatchService
+from core.config import config
 from typing import Dict, Any, Optional
 import logging
 import asyncio
@@ -14,10 +17,11 @@ class CommunicatorAgent(BaseAgent):
         super().__init__(AgentType.COMMUNICATOR)
         self.github_client = GitHubClient()
         self.jira_client = JIRAClient()
+        self.patch_service = PatchService()
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Create GitHub PR and update JIRA ticket with proper context validation"""
-        self.log_execution(execution_id, "Starting communication process")
+        """Apply patches to target branch and update JIRA ticket"""
+        self.log_execution(execution_id, f"Starting communication process with target branch: {config.github_target_branch}")
         
         # Get successful patches
         successful_patches = self._get_successful_patches(ticket)
@@ -44,49 +48,65 @@ class CommunicatorAgent(BaseAgent):
                 "status": "completed",
                 "actions_taken": actions_taken,
                 "patches_deployed": len(successful_patches),
-                "github_operations": False
+                "github_operations": False,
+                "target_branch": config.github_target_branch
             }
         
-        # Create GitHub branch and PR
-        branch_name = f"fix-{ticket.jira_id}-{ticket.id}"
-        
         try:
-            # Create branch
-            branch_created = await self.github_client.create_branch(branch_name)
-            if branch_created:
-                self.log_execution(execution_id, f"Created branch: {branch_name}")
-                actions_taken.append(f"Created branch {branch_name}")
+            # Apply patches directly to target branch
+            self.log_execution(execution_id, f"Applying {len(successful_patches)} patches to {config.github_target_branch}")
+            
+            # Convert PatchAttempt objects to dictionaries for patch service
+            patch_dicts = []
+            for patch in successful_patches:
+                patch_dict = {
+                    "id": patch.id,
+                    "target_file": patch.target_file,
+                    "patch_content": patch.patch_content,
+                    "patched_code": patch.patched_code,
+                    "base_file_hash": patch.base_file_hash,
+                    "commit_message": patch.commit_message or f"Fix for ticket {ticket.jira_id}"
+                }
+                patch_dicts.append(patch_dict)
+            
+            # Apply patches using patch service
+            apply_result = await self.patch_service.apply_patches_intelligently(patch_dicts, ticket.id)
+            
+            if apply_result["successful_patches"]:
+                self.log_execution(execution_id, f"Successfully applied {len(apply_result['successful_patches'])} patches")
+                actions_taken.append(f"Applied {len(apply_result['successful_patches'])} patches to {config.github_target_branch}")
                 
-                # Commit patches
-                for patch in successful_patches:
-                    commit_success = await self._commit_patch(patch, branch_name)
-                    if commit_success:
-                        actions_taken.append(f"Committed patch {patch.id}")
-                
-                # Create PR
-                pr_data = await self._create_pull_request(ticket, branch_name, successful_patches)
-                if pr_data:
-                    self._save_github_pr(ticket, pr_data)
-                    actions_taken.append(f"Created PR #{pr_data['number']}")
-                    
-                    # Update JIRA ticket
-                    jira_updated = await self._update_jira_ticket(ticket, pr_data)
-                    if jira_updated:
-                        actions_taken.append("Updated JIRA ticket with PR link")
+                for file_path in apply_result["files_modified"]:
+                    actions_taken.append(f"Modified {file_path}")
+            
+            if apply_result["failed_patches"]:
+                self.log_execution(execution_id, f"Failed to apply {len(apply_result['failed_patches'])} patches")
+                actions_taken.append(f"Failed to apply {len(apply_result['failed_patches'])} patches")
+            
+            # Update JIRA ticket with results
+            jira_updated = await self._update_jira_ticket_with_branch_info(ticket, apply_result)
+            if jira_updated:
+                actions_taken.append("Updated JIRA ticket with deployment info")
                 
         except Exception as e:
             self.log_execution(execution_id, f"Error in communication process: {e}")
-            return {"status": "error", "error": str(e), "actions_taken": actions_taken}
+            return {
+                "status": "error", 
+                "error": str(e), 
+                "actions_taken": actions_taken,
+                "target_branch": config.github_target_branch
+            }
         
         result = {
             "status": "completed",
             "actions_taken": actions_taken,
             "patches_deployed": len(successful_patches),
-            "branch_name": branch_name,
-            "github_operations": True
+            "target_branch": config.github_target_branch,
+            "github_operations": True,
+            "apply_result": apply_result
         }
         
-        self.log_execution(execution_id, f"Communication completed: {len(actions_taken)} actions taken")
+        self.log_execution(execution_id, f"Communication completed: {len(actions_taken)} actions taken on {config.github_target_branch}")
         return result
     
     def _get_successful_patches(self, ticket: Ticket) -> list:
@@ -97,116 +117,60 @@ class CommunicatorAgent(BaseAgent):
                 PatchAttempt.success == True
             ).all()
     
-    async def _commit_patch(self, patch: PatchAttempt, branch_name: str) -> bool:
-        """Commit a patch to the GitHub branch"""
-        try:
-            # Extract file path from patch content (simplified)
-            # In real implementation, would parse unified diff format
-            file_path = self._extract_file_path_from_patch(patch)
-            
-            if not file_path:
-                logger.error(f"Could not extract file path from patch {patch.id}")
-                return False
-            
-            # Commit the patched code
-            commit_success = await self.github_client.commit_file(
-                file_path=file_path,
-                content=patch.patched_code,
-                commit_message=patch.commit_message or f"Fix for patch {patch.id}",
-                branch=branch_name
-            )
-            
-            return commit_success
-            
-        except Exception as e:
-            logger.error(f"Error committing patch {patch.id}: {e}")
-            return False
-    
-    async def _create_pull_request(self, ticket: Ticket, branch_name: str, patches: list) -> Dict:
-        """Create a pull request for the fixes"""
-        patch_count = len(patches)
+    async def _update_jira_ticket_with_branch_info(self, ticket: Ticket, apply_result: Dict) -> bool:
+        """Update JIRA ticket with branch deployment information"""
+        successful_count = len(apply_result["successful_patches"])
+        failed_count = len(apply_result["failed_patches"])
+        files_modified = apply_result["files_modified"]
         
-        title = f"Fix {ticket.jira_id}: {ticket.title}"
-        
-        body = f"""
-## Fix for {ticket.jira_id}
+        comment = f"""
+Automated fix has been applied to branch: {config.github_target_branch}
 
-**Issue**: {ticket.title}
+**Deployment Summary**:
+- Successfully applied: {successful_count} patches
+- Failed to apply: {failed_count} patches
+- Files modified: {len(files_modified)}
 
-**Description**: {ticket.description[:500]}...
+**Modified Files**:
+{chr(10).join(f"- {file}" for file in files_modified)}
 
-**Changes**:
-- Applied {patch_count} code patch{'es' if patch_count > 1 else ''}
-- Automated fix generated by AI Agent System
+**Branch**: {config.github_target_branch}
+**Status**: {'Deployed successfully' if successful_count > 0 else 'Deployment failed'}
 
-**Patches Applied**:
+This fix was automatically generated and applied by the AI Agent System.
 """
         
-        for i, patch in enumerate(patches, 1):
-            body += f"\n{i}. Confidence: {patch.confidence_score:.2f} - {patch.commit_message}"
+        if successful_count > 0:
+            status = "In Review"
+        else:
+            status = "To Do"  # Reset if deployment failed
         
-        body += f"\n\n**Testing**: All patches have passed automated QA testing."
-        body += f"\n\n**JIRA Ticket**: [{ticket.jira_id}]({self._get_jira_url(ticket.jira_id)})"
-        
-        return await self.github_client.create_pull_request(
-            title=title,
-            body=body,
-            head_branch=branch_name
+        return await self.jira_client.update_ticket_status(
+            jira_id=ticket.jira_id,
+            status=status,
+            comment=comment
         )
     
-    async def _update_jira_ticket(self, ticket: Ticket, pr_data: Dict) -> bool:
-        """Update JIRA ticket with PR information"""
+    async def _update_jira_with_results(self, ticket: Ticket, patches: list) -> bool:
+        """Update JIRA with patch results when GitHub is not configured"""
         comment = f"""
-Automated fix has been generated and is ready for review.
+Automated patches have been generated for this ticket.
 
-**Pull Request**: [{pr_data['title']}]({pr_data['html_url']})
-**Branch**: {pr_data['head']['ref']}
-**Status**: Ready for code review
+**Patch Summary**:
+- Total patches generated: {len(patches)}
+- Average confidence: {sum(p.confidence_score for p in patches) / len(patches):.2f}
 
-This fix was automatically generated by the AI Agent System and has passed QA testing.
+**Note**: GitHub integration is not configured, so patches were not automatically deployed.
+Manual review and application of patches may be required.
+
+This analysis was performed by the AI Agent System.
 """
         
         return await self.jira_client.update_ticket_status(
             jira_id=ticket.jira_id,
-            status="In Review",
+            status="Analysis Complete",
             comment=comment
         )
-    
-    def _save_github_pr(self, ticket: Ticket, pr_data: Dict):
-        """Save GitHub PR information to database"""
-        with next(get_sync_db()) as db:
-            github_pr = GitHubPR(
-                ticket_id=ticket.id,
-                pr_number=pr_data["number"],
-                pr_url=pr_data["html_url"],
-                branch_name=pr_data["head"]["ref"],
-                status="open"
-            )
-            db.add(github_pr)
-            db.commit()
-    
-    def _extract_file_path_from_patch(self, patch: PatchAttempt) -> Optional[str]:
-        """Extract file path from patch content"""
-        # Simple extraction - in real implementation would parse unified diff
-        lines = patch.patch_content.split('\n')
-        for line in lines:
-            if line.startswith('+++') or line.startswith('---'):
-                # Extract path after the prefix
-                parts = line.split('\t')[0].split(' ')
-                if len(parts) > 1:
-                    path = parts[1]
-                    if path.startswith('b/'):
-                        return path[2:]  # Remove 'b/' prefix
-                    return path
-        
-        # Repository-aware fallback - don't assume main.py exists
-        logger.warning(f"Could not extract file path from patch {patch.id}")
-        return None  # Let caller handle gracefully instead of assuming main.py
-    
-    def _get_jira_url(self, jira_id: str) -> str:
-        """Get JIRA ticket URL"""
-        base_url = self.jira_client.base_url
-        return f"{base_url}/browse/{jira_id}"
     
     def _validate_context(self, context: Dict[str, Any]) -> bool:
         """Validate communicator context"""
@@ -214,5 +178,5 @@ This fix was automatically generated by the AI Agent System and has passed QA te
     
     def _validate_result(self, result: Dict[str, Any]) -> bool:
         """Validate communicator results"""
-        required_fields = ["status", "actions_taken", "patches_deployed"]
+        required_fields = ["status", "actions_taken", "patches_deployed", "target_branch"]
         return all(field in result for field in required_fields)
