@@ -64,7 +64,7 @@ class PatchAttempt(Base):
     
     id = Column(Integer, primary_key=True, index=True)
     ticket_id = Column(Integer, ForeignKey("tickets.id"))
-    execution_id = Column(Integer, ForeignKey("agent_executions.id"))
+    execution_id = Column(Integer, ForeignKey("agent_executions.id"))  # Fixed field name
     target_file = Column(String)
     patch_content = Column(Text)
     patched_code = Column(Text)
