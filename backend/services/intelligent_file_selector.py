@@ -2,22 +2,57 @@
 import re
 import os
 from typing import List, Dict, Any, Set, Tuple
-from services.github_client import GitHubClient
+from services.enhanced_file_selector import EnhancedFileSelector
 from core.config import config
 import logging
 
 logger = logging.getLogger(__name__)
 
 class IntelligentFileSelector:
-    """Smart file selection based on error traces and ticket descriptions"""
+    """Smart file selection based on error traces and ticket descriptions - now uses enhanced semantic analysis"""
     
     def __init__(self):
-        self.github_client = GitHubClient()
+        self.enhanced_selector = EnhancedFileSelector()
         self.max_files = config.max_source_files
     
     async def select_relevant_files(self, ticket_title: str, ticket_description: str, error_trace: str) -> List[Dict[str, Any]]:
-        """Select the most relevant files based on error analysis"""
-        logger.info(f"🔍 Starting intelligent file selection for ticket: {ticket_title}")
+        """Select the most relevant files using enhanced semantic analysis"""
+        logger.info(f"🔄 Redirecting to enhanced file selector for: {ticket_title}")
+        
+        try:
+            # Use the new enhanced selector
+            selected_files = await self.enhanced_selector.select_relevant_files(
+                ticket_title, ticket_description, error_trace
+            )
+            
+            # Ensure backward compatibility with expected format
+            formatted_files = []
+            for file in selected_files:
+                formatted_file = {
+                    'path': file['path'],
+                    'content': file['content'],
+                    'relevance_score': file.get('final_relevance_score', file.get('semantic_score', 0.5)),
+                    'size': len(file['content'])
+                }
+                
+                # Add semantic analysis info if available
+                if 'semantic_analysis' in file:
+                    formatted_file['semantic_analysis'] = file['semantic_analysis']
+                
+                formatted_files.append(formatted_file)
+            
+            logger.info(f"✅ Enhanced selection completed: {len(formatted_files)} files selected")
+            return formatted_files
+            
+        except Exception as e:
+            logger.error(f"❌ Enhanced file selection failed: {e}")
+            logger.info("🔄 Falling back to legacy file selection")
+            return await self._legacy_select_relevant_files(ticket_title, ticket_description, error_trace)
+    
+    async def _legacy_select_relevant_files(self, ticket_title: str, ticket_description: str, error_trace: str) -> List[Dict[str, Any]]:
+        """Legacy file selection method as fallback"""
+        # ... keep existing code (all the original methods from the legacy selector)
+        logger.info(f"🔍 Using legacy file selection for ticket: {ticket_title}")
         
         # Extract file paths and keywords from error trace
         error_files = self._extract_files_from_error_trace(error_trace)
@@ -27,7 +62,10 @@ class IntelligentFileSelector:
         logger.info(f"🔑 Keywords extracted: {error_keywords}")
         
         # Get repository tree
-        repo_tree = await self.github_client.get_repository_tree(config.github_target_branch)
+        from services.github_client import GitHubClient
+        github_client = GitHubClient()
+        repo_tree = await github_client.get_repository_tree(config.github_target_branch)
+        
         if not repo_tree:
             logger.warning("⚠️ Could not get repository tree - using fallback selection")
             return await self._fallback_file_selection(error_files)
@@ -43,7 +81,7 @@ class IntelligentFileSelector:
         # Fetch file contents
         files_with_content = []
         for file_info in selected_files:
-            content = await self.github_client.get_file_content(file_info['path'], config.github_target_branch)
+            content = await github_client.get_file_content(file_info['path'], config.github_target_branch)
             if content:
                 files_with_content.append({
                     'path': file_info['path'],
@@ -54,6 +92,8 @@ class IntelligentFileSelector:
                 logger.info(f"📄 Loaded {file_info['path']} ({len(content)} chars, score: {file_info['score']:.2f})")
         
         return files_with_content
+    
+    # ... keep existing code (all the legacy helper methods for backward compatibility)
     
     def _extract_files_from_error_trace(self, error_trace: str) -> Set[str]:
         """Extract file paths from error traces and stack traces"""
@@ -183,10 +223,13 @@ class IntelligentFileSelector:
         """Fallback selection when repository tree is not available"""
         logger.info("🔄 Using fallback file selection")
         
+        from services.github_client import GitHubClient
+        github_client = GitHubClient()
+        
         # Try to get files mentioned in errors first
         files_with_content = []
         for file_path in list(error_files)[:self.max_files]:
-            content = await self.github_client.get_file_content(file_path, config.github_target_branch)
+            content = await github_client.get_file_content(file_path, config.github_target_branch)
             if content:
                 files_with_content.append({
                     'path': file_path,
@@ -201,7 +244,7 @@ class IntelligentFileSelector:
             for file_path in common_files:
                 if len(files_with_content) >= self.max_files:
                     break
-                content = await self.github_client.get_file_content(file_path, config.github_target_branch)
+                content = await github_client.get_file_content(file_path, config.github_target_branch)
                 if content:
                     files_with_content.append({
                         'path': file_path,
