@@ -52,6 +52,7 @@ class RepositoryAnalyzer:
             
         except Exception as e:
             logger.error(f"❌ General repository analysis failed: {e}")
+            # Always return a dictionary, even on error
             return {
                 "source_files": [],
                 "analysis_summary": f"Repository analysis failed: {str(e)}",

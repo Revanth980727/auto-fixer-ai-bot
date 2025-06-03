@@ -1,4 +1,3 @@
-
 import re
 import os
 from typing import List, Dict, Any, Set, Tuple
@@ -20,7 +19,7 @@ class IntelligentFileSelector:
         logger.info(f"🔄 Redirecting to enhanced file selector for: {ticket_title}")
         
         try:
-            # Use the new enhanced selector
+            # Use the enhanced selector with correct method name
             selected_files = await self.enhanced_selector.select_relevant_files(
                 ticket_title, ticket_description, error_trace
             )

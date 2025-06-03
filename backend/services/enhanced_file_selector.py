@@ -1,4 +1,3 @@
-
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
@@ -16,7 +15,7 @@ class EnhancedFileSelector:
         self.github_client = GitHubClient()
         self.semantic_analyzer = SemanticAnalyzer()
     
-    async def select_most_relevant_files(self, ticket_title: str, ticket_description: str, error_trace: str = "") -> List[Dict[str, Any]]:
+    async def select_relevant_files(self, ticket_title: str, ticket_description: str, error_trace: str = "") -> List[Dict[str, Any]]:
         """Select the most relevant files using enhanced chunked semantic analysis"""
         logger.info(f"🚀 Starting enhanced file selection for: {ticket_title}")
         
