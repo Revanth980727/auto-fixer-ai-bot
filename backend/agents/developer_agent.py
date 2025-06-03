@@ -21,10 +21,11 @@ class DeveloperAgent(BaseAgent):
         self.github_client = GitHubClient()
         self.json_handler = JSONResponseHandler()
         self.file_handler = LargeFileHandler()
+        self.large_file_threshold = 15000  # Force chunking for files over 15KB
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate intelligent code patches with enhanced error handling and resilient processing"""
-        self.log_execution(execution_id, "🚀 Starting enhanced intelligent code generation with resilient processing")
+        """Generate intelligent code patches with forced chunking for large files"""
+        self.log_execution(execution_id, "🚀 Starting enhanced developer agent with forced large file chunking")
         
         if not context:
             self.log_execution(execution_id, "❌ No context provided - developer agent requires planner analysis")
@@ -42,81 +43,88 @@ class DeveloperAgent(BaseAgent):
             self.log_execution(execution_id, "❌ No source files available - cannot generate patches")
             raise Exception("No source files available for patch generation")
         
-        self.log_execution(execution_id, f"📁 Processing {len(source_files)} intelligently selected files")
-        self.log_execution(execution_id, f"🎯 Files selected: {[f['path'] for f in source_files]}")
-        self.log_execution(execution_id, f"🔍 Total code size: {sum(len(f['content']) for f in source_files)} characters")
+        self.log_execution(execution_id, f"📁 Processing {len(source_files)} files with enhanced large file handling")
         
-        # Generate intelligent patches with enhanced resilience
+        # Analyze file sizes and processing strategy
+        for file_info in source_files:
+            file_size = len(file_info['content'])
+            self.log_execution(execution_id, f"📊 {file_info['path']}: {file_size} characters")
+            if file_size > self.large_file_threshold:
+                self.log_execution(execution_id, f"🧩 {file_info['path']} will use CHUNKING strategy (size: {file_size})")
+            else:
+                self.log_execution(execution_id, f"📝 {file_info['path']} will use SINGLE FILE strategy")
+        
+        # Generate patches with enforced strategies
         patches = []
         total_files = len(source_files)
         
         for i, file_info in enumerate(source_files, 1):
-            self.log_execution(execution_id, f"🔧 Generating resilient patch {i}/{total_files} for {file_info['path']}")
-            self.log_execution(execution_id, f"📊 File size: {len(file_info['content'])} characters")
+            self.log_execution(execution_id, f"🔧 Processing file {i}/{total_files}: {file_info['path']}")
             
             # Add file state tracking
             file_hash = hashlib.sha256(file_info['content'].encode()).hexdigest()
             file_info['hash'] = file_hash
             
             try:
-                # Use resilient patch generation with fallback strategies
+                # Set processing timeout based on file size
+                file_size = len(file_info['content'])
+                timeout = 300.0 if file_size > self.large_file_threshold else 180.0
+                
+                self.log_execution(execution_id, f"⏱️ Setting timeout to {timeout}s for {file_info['path']}")
+                
+                # Use enhanced patch generation with strict timeout
                 patch_data = await asyncio.wait_for(
-                    self._generate_resilient_patch(ticket, file_info, planner_data, execution_id),
-                    timeout=300.0  # 5 minute timeout for complex analysis
+                    self._generate_patch_with_strategy(ticket, file_info, planner_data, execution_id),
+                    timeout=timeout
                 )
                 
                 if patch_data:
                     patches.append(patch_data)
-                    # Save patch with enhanced error handling
                     await self._save_patch_attempt_safely(ticket, execution_id, patch_data)
-                    self.log_execution(execution_id, f"✅ SUCCESS: Generated resilient patch for {file_info['path']}")
+                    self.log_execution(execution_id, f"✅ SUCCESS: Generated patch for {file_info['path']}")
                 else:
                     self.log_execution(execution_id, f"❌ FAILED: Could not generate valid patch for {file_info['path']}")
                     
             except asyncio.TimeoutError:
-                self.log_execution(execution_id, f"⏰ TIMEOUT: Patch generation for {file_info['path']} exceeded 5 minutes")
+                self.log_execution(execution_id, f"⏰ TIMEOUT: Patch generation for {file_info['path']} exceeded timeout")
                 continue
             except Exception as e:
                 self.log_execution(execution_id, f"💥 ERROR: Exception generating patch for {file_info['path']}: {str(e)}")
                 continue
         
         if not patches:
-            self.log_execution(execution_id, "💥 CRITICAL: Failed to generate any valid patches for any file")
-            raise Exception("No valid patches could be generated - check OpenAI API connectivity and file analysis")
+            self.log_execution(execution_id, "💥 CRITICAL: Failed to generate any valid patches")
+            raise Exception("No valid patches could be generated - all strategies failed")
         
         result = {
             "patches_generated": len(patches),
             "patches": patches,
             "planner_analysis": planner_data,
-            "resilient_processing": True,
-            "large_file_support": True,
-            "processing_time_info": f"Processed {len(patches)}/{total_files} files successfully with resilient handling"
+            "enhanced_processing": True,
+            "large_file_handling": True,
+            "processing_summary": f"Successfully processed {len(patches)}/{total_files} files"
         }
         
-        self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} resilient patches successfully")
+        self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} patches successfully")
         return result
     
-    async def _generate_resilient_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate a patch with multiple fallback strategies for large files"""
-        try:
-            self.log_execution(execution_id, f"🔄 Starting resilient patch generation for {file_info['path']}")
-            
-            # Strategy 1: Try full file processing for smaller files
-            if not self.file_handler.should_chunk_file(file_info['content']):
-                self.log_execution(execution_id, f"📝 Processing {file_info['path']} as single file")
-                return await self._generate_single_file_patch(ticket, file_info, analysis, execution_id)
-            
-            # Strategy 2: Use chunked processing for large files
-            self.log_execution(execution_id, f"🧩 Processing {file_info['path']} with chunking strategy")
+    async def _generate_patch_with_strategy(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
+        """Generate patch using appropriate strategy based on file size"""
+        file_size = len(file_info['content'])
+        
+        # Force chunking for large files
+        if file_size > self.large_file_threshold:
+            self.log_execution(execution_id, f"🧩 FORCED CHUNKING: {file_info['path']} ({file_size} chars > {self.large_file_threshold})")
             return await self._generate_chunked_patch(ticket, file_info, analysis, execution_id)
-            
-        except Exception as e:
-            self.log_execution(execution_id, f"💥 All strategies failed for {file_info['path']}: {e}")
-            return None
+        else:
+            self.log_execution(execution_id, f"📝 SINGLE FILE: {file_info['path']} ({file_size} chars)")
+            return await self._generate_single_file_patch(ticket, file_info, analysis, execution_id)
     
     async def _generate_single_file_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate patch for a single file with enhanced JSON handling"""
+        """Generate patch for a single file with enhanced monitoring"""
         try:
+            self.log_execution(execution_id, f"📝 Starting single file patch generation for {file_info['path']}")
+            
             # Generate the fix with enhanced context
             patch_prompt = f"""
 You are an expert software engineer with deep understanding of code architecture and debugging.
@@ -162,14 +170,11 @@ CRITICAL: Generate ONLY valid JSON. The patch must be a proper unified diff that
             
             self.log_execution(execution_id, f"🤖 Sending single file patch request for {file_info['path']}")
             
-            # Use GPT-4o for better analysis with timeout
-            response = await asyncio.wait_for(
-                self.openai_client.complete_chat([
-                    {"role": "system", "content": "You are an expert software engineer specializing in precise code fixes. Generate only valid JSON responses with proper unified diff patches."},
-                    {"role": "user", "content": patch_prompt}
-                ], model="gpt-4o"),
-                timeout=180.0
-            )
+            # Use GPT-4o for better analysis with reduced timeout
+            response = await self.openai_client.complete_chat([
+                {"role": "system", "content": "You are an expert software engineer specializing in precise code fixes. Generate only valid JSON responses with proper unified diff patches."},
+                {"role": "user", "content": patch_prompt}
+            ], model="gpt-4o")
             
             self.log_execution(execution_id, f"📨 Response received for {file_info['path']}, length: {len(response)}")
             
@@ -179,8 +184,6 @@ CRITICAL: Generate ONLY valid JSON. The patch must be a proper unified diff that
             if patch_data is None:
                 self.log_execution(execution_id, f"❌ JSON parsing failed for {file_info['path']}: {error}")
                 return None
-            
-            self.log_execution(execution_id, f"✅ Successfully parsed JSON for {file_info['path']}")
             
             # Validate patch data
             is_valid, validation_error = self.json_handler.validate_patch_json(patch_data)
@@ -197,9 +200,6 @@ CRITICAL: Generate ONLY valid JSON. The patch must be a proper unified diff that
             self.log_execution(execution_id, f"🎯 Single file patch generated for {file_info['path']} with confidence {confidence}")
             return patch_data
             
-        except asyncio.TimeoutError:
-            self.log_execution(execution_id, f"⏰ Single file generation timeout for {file_info['path']}")
-            return None
         except Exception as e:
             self.log_execution(execution_id, f"💥 Single file generation error for {file_info['path']}: {str(e)}")
             return None
@@ -207,14 +207,20 @@ CRITICAL: Generate ONLY valid JSON. The patch must be a proper unified diff that
     async def _generate_chunked_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
         """Generate patch using chunking strategy for large files"""
         try:
+            self.log_execution(execution_id, f"🧩 Starting chunked processing for {file_info['path']}")
+            
             # Create file chunks
             chunks = self.file_handler.create_file_chunks(file_info['content'], file_info['path'])
-            self.log_execution(execution_id, f"🧩 Created {len(chunks)} chunks for {file_info['path']}")
+            self.log_execution(execution_id, f"📦 Created {len(chunks)} chunks for {file_info['path']}")
             
-            # Process each chunk
+            # Process each chunk with progress tracking
             chunk_patches = []
             for chunk in chunks:
-                self.log_execution(execution_id, f"🔧 Processing chunk {chunk['chunk_id'] + 1}/{len(chunks)} for {file_info['path']}")
+                chunk_num = chunk['chunk_id'] + 1
+                total_chunks = len(chunks)
+                
+                self.log_execution(execution_id, f"🔧 Processing chunk {chunk_num}/{total_chunks} for {file_info['path']}")
+                self.log_execution(execution_id, f"📋 Chunk {chunk_num}: lines {chunk['start_line']}-{chunk['end_line']}")
                 
                 chunk_context = self.file_handler.create_chunk_context(chunk, file_info, ticket)
                 
@@ -236,28 +242,26 @@ Generate ONLY valid JSON.
 """
                 
                 try:
-                    response = await asyncio.wait_for(
-                        self.openai_client.complete_chat([
-                            {"role": "system", "content": "You are an expert software engineer analyzing code chunks. Generate only valid JSON responses."},
-                            {"role": "user", "content": chunk_prompt}
-                        ], model="gpt-4o"),
-                        timeout=120.0
-                    )
+                    self.log_execution(execution_id, f"🤖 Sending chunk {chunk_num} request")
+                    
+                    response = await self.openai_client.complete_chat([
+                        {"role": "system", "content": "You are an expert software engineer analyzing code chunks. Generate only valid JSON responses."},
+                        {"role": "user", "content": chunk_prompt}
+                    ], model="gpt-4o")
+                    
+                    self.log_execution(execution_id, f"📨 Chunk {chunk_num} response received")
                     
                     # Parse chunk response
                     chunk_data, error = self.json_handler.clean_and_parse_json(response)
                     
                     if chunk_data and chunk_data.get('confidence_score', 0) > 0.3:
                         chunk_patches.append(chunk_data)
-                        self.log_execution(execution_id, f"✅ Processed chunk {chunk['chunk_id'] + 1} successfully")
+                        self.log_execution(execution_id, f"✅ Chunk {chunk_num} processed successfully (confidence: {chunk_data.get('confidence_score', 0)})")
                     else:
-                        self.log_execution(execution_id, f"⚠️ Chunk {chunk['chunk_id'] + 1} had low confidence or failed parsing")
+                        self.log_execution(execution_id, f"⚠️ Chunk {chunk_num} had low confidence or failed parsing")
                         
-                except asyncio.TimeoutError:
-                    self.log_execution(execution_id, f"⏰ Chunk {chunk['chunk_id'] + 1} processing timeout")
-                    continue
                 except Exception as e:
-                    self.log_execution(execution_id, f"💥 Error processing chunk {chunk['chunk_id'] + 1}: {e}")
+                    self.log_execution(execution_id, f"💥 Error processing chunk {chunk_num}: {e}")
                     continue
             
             # Combine chunk patches
@@ -265,11 +269,13 @@ Generate ONLY valid JSON.
                 self.log_execution(execution_id, f"❌ No valid chunk patches for {file_info['path']}")
                 return None
             
+            self.log_execution(execution_id, f"🔗 Combining {len(chunk_patches)} chunk patches for {file_info['path']}")
             combined_patch = self.file_handler.combine_chunk_patches(chunk_patches, file_info)
             
             if combined_patch:
-                self.log_execution(execution_id, f"✅ Successfully combined {len(chunk_patches)} chunk patches for {file_info['path']}")
+                self.log_execution(execution_id, f"✅ Successfully combined chunk patches for {file_info['path']}")
                 combined_patch["processing_strategy"] = "chunked"
+                combined_patch["chunks_processed"] = len(chunk_patches)
                 return combined_patch
             else:
                 self.log_execution(execution_id, f"❌ Failed to combine chunk patches for {file_info['path']}")
@@ -278,23 +284,5 @@ Generate ONLY valid JSON.
         except Exception as e:
             self.log_execution(execution_id, f"💥 Chunked processing error for {file_info['path']}: {e}")
             return None
-    
+
     # ... keep existing code (_save_patch_attempt_safely method)
-    async def _save_patch_attempt_safely(self, ticket: Ticket, execution_id: int, patch_data: Dict[str, Any]):
-        """Safely save patch attempt with error handling"""
-        try:
-            with get_sync_db() as db:
-                patch_attempt = PatchAttempt(
-                    ticket_id=ticket.id,
-                    patch_content=patch_data.get("patch_content", ""),
-                    patched_code=patch_data.get("patched_code", ""),
-                    test_code=patch_data.get("test_code", ""),
-                    commit_message=patch_data.get("commit_message", ""),
-                    confidence_score=patch_data.get("confidence_score", 0.0),
-                    success=True
-                )
-                db.add(patch_attempt)
-                db.commit()
-                self.log_execution(execution_id, f"💾 Saved patch attempt for {patch_data.get('target_file', 'unknown file')}")
-        except Exception as e:
-            self.log_execution(execution_id, f"⚠️ Failed to save patch attempt: {e}")

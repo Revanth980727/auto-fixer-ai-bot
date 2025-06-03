@@ -1,4 +1,3 @@
-
 import openai
 from typing import List, Dict, Any, Optional
 import os
@@ -11,6 +10,7 @@ logger = logging.getLogger(__name__)
 class OpenAIClient:
     def __init__(self):
         self.client: Optional[openai.AsyncOpenAI] = None
+        self.max_request_size = 100000  # 100KB limit for single requests
         self._initialize_client()
     
     def _initialize_client(self):
@@ -30,10 +30,22 @@ class OpenAIClient:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             self.client = None
     
+    def _check_request_size(self, messages: List[Dict[str, str]]) -> bool:
+        """Check if request size is within limits"""
+        total_size = sum(len(str(msg)) for msg in messages)
+        if total_size > self.max_request_size:
+            logger.warning(f"Request size {total_size} exceeds limit {self.max_request_size}")
+            return False
+        return True
+    
     async def complete_chat(self, messages: List[Dict[str, str]], model: str = None, max_retries: int = None) -> str:
-        """Complete a chat conversation with timeout and retry logic"""
+        """Complete a chat conversation with enhanced timeout and monitoring"""
         if not self.client:
             raise RuntimeError("OpenAI client not initialized. Check API key and dependencies.")
+        
+        # Check request size
+        if not self._check_request_size(messages):
+            raise Exception("Request size exceeds maximum allowed limit")
         
         # Use configured defaults if not specified
         if model is None:
@@ -41,31 +53,50 @@ class OpenAIClient:
         if max_retries is None:
             max_retries = api_config.openai_max_retries
         
+        # Reduce timeout for patch generation to detect hangs faster
+        timeout = 120.0 if "patch" in str(messages).lower() else api_config.openai_request_timeout
+        
         for attempt in range(max_retries):
             try:
-                logger.info(f"OpenAI request attempt {attempt + 1}/{max_retries} using model {model}")
+                logger.info(f"🤖 OpenAI request attempt {attempt + 1}/{max_retries} using model {model}")
+                logger.info(f"📊 Request size: {sum(len(str(msg)) for msg in messages)} characters")
+                logger.info(f"⏱️ Timeout set to: {timeout}s")
                 
-                response = await asyncio.wait_for(
-                    self.client.chat.completions.create(
-                        model=model,
-                        messages=messages,
-                        max_tokens=model_config.max_tokens_patch,
-                        temperature=model_config.temperature
-                    ),
-                    timeout=api_config.openai_request_timeout
-                )
+                # Add heartbeat logging for long requests
+                async def heartbeat():
+                    for i in range(int(timeout // 10)):
+                        await asyncio.sleep(10)
+                        logger.info(f"💓 Still processing OpenAI request... ({(i+1)*10}s elapsed)")
                 
-                logger.info(f"OpenAI request successful on attempt {attempt + 1}")
-                return response.choices[0].message.content
+                heartbeat_task = asyncio.create_task(heartbeat())
+                
+                try:
+                    response = await asyncio.wait_for(
+                        self.client.chat.completions.create(
+                            model=model,
+                            messages=messages,
+                            max_tokens=model_config.max_tokens_patch,
+                            temperature=model_config.temperature
+                        ),
+                        timeout=timeout
+                    )
+                    
+                    heartbeat_task.cancel()
+                    logger.info(f"✅ OpenAI request successful on attempt {attempt + 1}")
+                    return response.choices[0].message.content
+                    
+                except asyncio.CancelledError:
+                    heartbeat_task.cancel()
+                    raise
                 
             except asyncio.TimeoutError:
-                logger.warning(f"OpenAI request timeout on attempt {attempt + 1}/{max_retries}")
+                logger.warning(f"⏰ OpenAI request timeout ({timeout}s) on attempt {attempt + 1}/{max_retries}")
                 if attempt == max_retries - 1:
-                    raise Exception("OpenAI request timed out after all retries")
+                    raise Exception(f"OpenAI request timed out after {timeout}s and all retries")
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
                 
             except Exception as e:
-                logger.error(f"OpenAI API error on attempt {attempt + 1}/{max_retries}: {e}")
+                logger.error(f"💥 OpenAI API error on attempt {attempt + 1}/{max_retries}: {e}")
                 if attempt == max_retries - 1:
                     raise e
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff

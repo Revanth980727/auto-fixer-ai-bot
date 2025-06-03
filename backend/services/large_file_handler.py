@@ -1,4 +1,3 @@
-
 import hashlib
 import logging
 from typing import Dict, Any, List, Optional, Tuple
@@ -7,19 +6,19 @@ from services.openai_client import OpenAIClient
 logger = logging.getLogger(__name__)
 
 class LargeFileHandler:
-    """Handler for processing large files with chunking and incremental patching"""
+    """Handler for processing large files with aggressive chunking and incremental patching"""
     
     def __init__(self):
         self.openai_client = OpenAIClient()
-        self.chunk_size_limit = 15000  # characters
-        self.context_overlap = 500     # characters overlap between chunks
+        self.chunk_size_limit = 12000  # Reduced from 15000 for better processing
+        self.context_overlap = 300     # Reduced overlap for efficiency
     
     def should_chunk_file(self, file_content: str) -> bool:
-        """Determine if file should be processed in chunks"""
+        """Determine if file should be processed in chunks - more aggressive"""
         return len(file_content) > self.chunk_size_limit
     
     def create_file_chunks(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
-        """Create overlapping chunks of large files"""
+        """Create optimized chunks for large files"""
         if not self.should_chunk_file(file_content):
             return [{
                 "content": file_content,
@@ -33,18 +32,32 @@ class LargeFileHandler:
         chunks = []
         chunk_id = 0
         
-        # Calculate lines per chunk
+        # Calculate optimal lines per chunk
         total_chars = len(file_content)
         chars_per_chunk = self.chunk_size_limit
-        lines_per_chunk = max(50, int(len(lines) * chars_per_chunk / total_chars))
+        lines_per_chunk = max(40, int(len(lines) * chars_per_chunk / total_chars))
+        
+        # Ensure we don't create chunks that are too small
+        min_lines_per_chunk = 20
+        lines_per_chunk = max(lines_per_chunk, min_lines_per_chunk)
+        
+        logger.info(f"Chunking {file_path}: {len(lines)} lines into ~{lines_per_chunk} lines per chunk")
         
         start_line = 0
         while start_line < len(lines):
             end_line = min(start_line + lines_per_chunk, len(lines))
             
-            # Add overlap from previous chunk
-            chunk_start = max(0, start_line - self.context_overlap // 20)
+            # Add minimal overlap from previous chunk
+            overlap_lines = self.context_overlap // 50  # Approximately 6 lines
+            chunk_start = max(0, start_line - overlap_lines)
             chunk_content = ''.join(lines[chunk_start:end_line])
+            
+            # Ensure chunk isn't too large
+            if len(chunk_content) > self.chunk_size_limit:
+                # Reduce chunk size if it's still too large
+                reduced_end = start_line + (lines_per_chunk // 2)
+                chunk_content = ''.join(lines[chunk_start:reduced_end])
+                end_line = reduced_end
             
             chunks.append({
                 "content": chunk_content,
@@ -53,17 +66,26 @@ class LargeFileHandler:
                 "chunk_id": chunk_id,
                 "is_single_chunk": False,
                 "overlap_start": chunk_start,
-                "total_chunks": 0  # Will be filled later
+                "total_chunks": 0,  # Will be filled later
+                "size": len(chunk_content)
             })
             
-            start_line = end_line - self.context_overlap // 20
+            start_line = end_line - overlap_lines
             chunk_id += 1
+            
+            # Safety limit to prevent infinite loops
+            if chunk_id > 50:
+                logger.warning(f"Reached maximum chunk limit for {file_path}")
+                break
         
         # Update total chunks count
         for chunk in chunks:
             chunk["total_chunks"] = len(chunks)
         
-        logger.info(f"Created {len(chunks)} chunks for {file_path}")
+        logger.info(f"Created {len(chunks)} optimized chunks for {file_path}")
+        for i, chunk in enumerate(chunks):
+            logger.info(f"  Chunk {i+1}: lines {chunk['start_line']}-{chunk['end_line']}, size: {chunk['size']} chars")
+        
         return chunks
     
     def create_chunk_context(self, chunk: Dict[str, Any], file_info: Dict[str, Any], ticket) -> str:
