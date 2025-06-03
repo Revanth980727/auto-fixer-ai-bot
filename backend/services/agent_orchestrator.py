@@ -1,3 +1,4 @@
+
 import asyncio
 from typing import Dict, Any, List
 from core.models import Ticket, TicketStatus, AgentType
@@ -89,11 +90,8 @@ class AgentOrchestrator:
                 logger.warning(f"Repository analysis failed: {repo_analysis['error']}")
                 metrics_collector.record_github_operation("repository_analysis", analysis_duration, False)
             else:
-                # Fix: Access files from the correct nested structure
-                files = repo_analysis.get("repository_structure", {}).get("files", [])
-                if not files:
-                    # Fallback: try direct access
-                    files = repo_analysis.get("files", [])
+                # Fix: Access files from the correct location - they're in source_files
+                files = repo_analysis.get("source_files", [])
                 
                 logger.info(f"Repository analysis completed: {len(files)} files analyzed")
                 logger.info(f"Repository analysis structure keys: {list(repo_analysis.keys())}")
@@ -102,10 +100,9 @@ class AgentOrchestrator:
                 
                 metrics_collector.record_github_operation("repository_analysis", analysis_duration, True)
                 
-                # Log key insights
-                critical_files = repo_analysis.get("critical_files", [])
-                if critical_files:
-                    logger.info(f"Identified {len(critical_files)} critical files")
+                # Log repository structure type
+                repo_structure = repo_analysis.get("repository_structure", "Unknown")
+                logger.info(f"Detected repository structure: {repo_structure}")
                 
         except Exception as e:
             logger.error(f"Error in initial repository analysis: {e}")
@@ -358,13 +355,9 @@ class AgentOrchestrator:
         try:
             repo_analysis = await self.repository_analyzer.analyze_repository()
             if not repo_analysis.get("error"):
-                # Fix: Access files from the correct nested structure
-                files = repo_analysis.get("repository_structure", {}).get("files", [])
-                if not files:
-                    # Fallback: try direct access
-                    files = repo_analysis.get("files", [])
+                # Fix: Access files from the correct location - they're in source_files
+                discovered_files = repo_analysis.get("source_files", [])
                 
-                discovered_files = files
                 logger.info(f"📊 Repository analysis available: {len(discovered_files)} files discovered")
                 
                 # Add detailed logging of the structure we received
@@ -374,8 +367,6 @@ class AgentOrchestrator:
                 else:
                     logger.warning(f"⚠️ No files found in repository analysis")
                     logger.info(f"📋 Repository analysis keys: {list(repo_analysis.keys())}")
-                    if "repository_structure" in repo_analysis:
-                        logger.info(f"📋 Repository structure keys: {list(repo_analysis['repository_structure'].keys())}")
             else:
                 logger.warning(f"Repository analysis failed: {repo_analysis.get('error')}")
         except Exception as e:
@@ -462,6 +453,8 @@ class AgentOrchestrator:
         
         logger.info(f"✅ Production planner context ready: {len(context['error_trace_files'])} files prepared")
         return context
+
+    # ... keep existing code (remaining methods stay the same)
 
     async def _prepare_production_developer_context(self, ticket: Ticket, planner_result: Dict, context_id: str) -> Dict[str, Any]:
         """Prepare production context for developer agent with intelligent file tracking"""

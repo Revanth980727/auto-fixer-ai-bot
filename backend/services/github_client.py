@@ -4,6 +4,7 @@ from typing import Dict, Any, Optional, List
 import os
 import base64
 import logging
+from core.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -24,19 +25,25 @@ class GitHubClient:
         logger.info(f"GitHub Configuration - Token present: {'Yes' if self.token else 'No'}")
         logger.info(f"GitHub Configuration - Repo owner: {self.repo_owner or 'Not set'}")
         logger.info(f"GitHub Configuration - Repo name: {self.repo_name or 'Not set'}")
+        logger.info(f"GitHub Configuration - Target branch: {config.github_target_branch}")
         if not self._is_configured():
             logger.warning("GitHub client is not properly configured - will operate in degraded mode")
     
-    async def get_repository_tree(self, branch: str = "main", recursive: bool = True) -> List[Dict[str, Any]]:
+    async def get_repository_tree(self, branch: str = None, recursive: bool = True) -> List[Dict[str, Any]]:
         """Get repository tree structure from GitHub API"""
         if not self._is_configured():
             logger.warning("GitHub not configured - cannot get repository tree")
             return []
         
+        # Use configured branch if not specified
+        if branch is None:
+            branch = config.github_target_branch
+        
         try:
             url = f"{self.base_url}/repos/{self.repo_owner}/{self.repo_name}/git/trees/{branch}"
             params = {"recursive": "1"} if recursive else {}
             
+            logger.info(f"Fetching repository tree from branch: {branch}")
             response = requests.get(url, headers=self.headers, params=params)
             
             if response.status_code == 200:
@@ -55,12 +62,15 @@ class GitHubClient:
             logger.error(f"Error getting repository tree: {e}")
             return []
 
-    # ... keep existing code (all other methods remain the same)
-    async def get_file_content(self, file_path: str, branch: str = "main") -> Optional[str]:
+    async def get_file_content(self, file_path: str, branch: str = None) -> Optional[str]:
         """Get file content from repository with better error handling"""
         if not self._is_configured():
             logger.warning(f"GitHub not configured - cannot fetch {file_path}")
             return None
+        
+        # Use configured branch if not specified
+        if branch is None:
+            branch = config.github_target_branch
         
         try:
             url = f"{self.base_url}/repos/{self.repo_owner}/{self.repo_name}/contents/{file_path}"
@@ -69,7 +79,7 @@ class GitHubClient:
             if response.status_code == 200:
                 data = response.json()
                 content = base64.b64decode(data["content"]).decode("utf-8")
-                logger.info(f"Successfully fetched file: {file_path}")
+                logger.info(f"Successfully fetched file: {file_path} from branch: {branch}")
                 return content
             elif response.status_code == 404:
                 logger.warning(f"File not found in repository: {file_path}")
@@ -82,11 +92,15 @@ class GitHubClient:
             logger.error(f"Error getting file content for {file_path}: {e}")
             return None
     
-    async def create_branch(self, branch_name: str, base_branch: str = "main") -> bool:
+    async def create_branch(self, branch_name: str, base_branch: str = None) -> bool:
         """Create a new branch"""
         if not self._is_configured():
             logger.warning("GitHub not configured - cannot create branch")
             return False
+        
+        # Use configured branch if not specified
+        if base_branch is None:
+            base_branch = config.github_target_branch
         
         try:
             # Get base branch SHA
@@ -118,11 +132,15 @@ class GitHubClient:
             logger.error(f"Error creating branch {branch_name}: {e}")
             return False
     
-    async def commit_file(self, file_path: str, content: str, commit_message: str, branch: str) -> bool:
+    async def commit_file(self, file_path: str, content: str, commit_message: str, branch: str = None) -> bool:
         """Commit file changes to repository"""
         if not self._is_configured():
             logger.warning("GitHub not configured - cannot commit file")
             return False
+        
+        # Use configured branch if not specified
+        if branch is None:
+            branch = config.github_target_branch
         
         try:
             # Get current file SHA if it exists
@@ -141,7 +159,7 @@ class GitHubClient:
             
             response = requests.put(file_url, headers=self.headers, json=commit_data)
             if response.status_code in [200, 201]:
-                logger.info(f"Successfully committed file: {file_path}")
+                logger.info(f"Successfully committed file: {file_path} to branch: {branch}")
                 return True
             else:
                 logger.error(f"Failed to commit file {file_path}: {response.status_code}")
@@ -151,11 +169,15 @@ class GitHubClient:
             logger.error(f"Error committing file {file_path}: {e}")
             return False
     
-    async def create_pull_request(self, title: str, body: str, head_branch: str, base_branch: str = "main") -> Optional[Dict]:
+    async def create_pull_request(self, title: str, body: str, head_branch: str, base_branch: str = None) -> Optional[Dict]:
         """Create a pull request"""
         if not self._is_configured():
             logger.warning("GitHub not configured - cannot create pull request")
             return None
+        
+        # Use configured branch if not specified
+        if base_branch is None:
+            base_branch = config.github_target_branch
         
         try:
             pr_url = f"{self.base_url}/repos/{self.repo_owner}/{self.repo_name}/pulls"
@@ -190,5 +212,6 @@ class GitHubClient:
             "has_token": bool(self.token),
             "has_repo_owner": bool(self.repo_owner),
             "has_repo_name": bool(self.repo_name),
-            "repo_full_name": f"{self.repo_owner}/{self.repo_name}" if self.repo_owner and self.repo_name else None
+            "repo_full_name": f"{self.repo_owner}/{self.repo_name}" if self.repo_owner and self.repo_name else None,
+            "target_branch": config.github_target_branch
         }
