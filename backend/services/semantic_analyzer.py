@@ -4,6 +4,7 @@ import logging
 from typing import List, Dict, Any, Optional
 from services.openai_client import OpenAIClient
 from services.code_preprocessor import CodePreprocessor
+from core.analysis_config import processing_config, analysis_config, model_config
 import json
 
 logger = logging.getLogger(__name__)
@@ -14,7 +15,7 @@ class SemanticAnalyzer:
     def __init__(self):
         self.openai_client = OpenAIClient()
         self.preprocessor = CodePreprocessor()
-        self.max_concurrent_requests = 3  # Limit concurrent OpenAI requests
+        self.max_concurrent_requests = processing_config.max_concurrent_requests
     
     async def analyze_files_for_relevance(self, files: List[Dict], project_context: Dict[str, Any]) -> List[Dict]:
         """Analyze multiple files for relevance to project context"""
@@ -30,7 +31,7 @@ class SemanticAnalyzer:
         # Combine analyzed files with remaining files (with lower default scores)
         remaining_files = [f for f in files if f['path'] not in {af['path'] for af in analyzed_files}]
         for file in remaining_files:
-            file['semantic_score'] = 0.1  # Low default score
+            file['semantic_score'] = analysis_config.min_semantic_score
             file['semantic_analysis'] = "Not analyzed - filtered out by heuristics"
         
         all_files = analyzed_files + remaining_files
@@ -59,48 +60,48 @@ class SemanticAnalyzer:
             # Error trace matches (highest priority)
             for error_file in error_files:
                 if error_file.lower() in path_lower or path.endswith(error_file):
-                    heuristic_score += 10.0
+                    heuristic_score += analysis_config.error_match_score
                 elif filename == error_file.lower().split('/')[-1]:
-                    heuristic_score += 8.0
+                    heuristic_score += analysis_config.error_match_score * 0.8
             
             # Project keyword matches
             for keyword in project_keywords:
                 if keyword.lower() in path_lower:
-                    heuristic_score += 3.0
+                    heuristic_score += analysis_config.keyword_match_score
                 if keyword.lower() in filename:
-                    heuristic_score += 2.0
+                    heuristic_score += analysis_config.keyword_match_score * 0.67
             
             # Main file indicators
-            main_indicators = ['main', 'index', 'app', 'server', 'core', 'engine']
-            for indicator in main_indicators:
+            for indicator in analysis_config.main_indicators:
                 if indicator in filename:
-                    heuristic_score += 2.0
+                    heuristic_score += analysis_config.main_file_score
             
             # File type preferences
             if path.endswith('.py'):
-                heuristic_score += 1.0
+                heuristic_score += analysis_config.python_file_score
             elif path.endswith(('.js', '.ts', '.tsx', '.jsx')):
-                heuristic_score += 0.8
+                heuristic_score += analysis_config.js_file_score
             
             # Avoid test files and config files for general analysis
-            if any(test_indicator in path_lower for test_indicator in ['test', 'spec', '__pycache__', '.git']):
-                heuristic_score -= 2.0
+            for test_indicator in analysis_config.test_indicators:
+                if test_indicator in path_lower:
+                    heuristic_score += analysis_config.test_file_penalty
             
             # Reasonable size preference (not too small, not too large)
             size = file.get('size', 0)
-            if 500 <= size <= 50000:  # Sweet spot for meaningful files
-                heuristic_score += 1.0
-            elif size > 100000:  # Very large files
-                heuristic_score -= 1.0
-            elif size < 100:  # Very small files
-                heuristic_score -= 0.5
+            if analysis_config.optimal_min_size <= size <= analysis_config.optimal_max_size:
+                heuristic_score += analysis_config.size_preference_score
+            elif size > analysis_config.max_file_size:
+                heuristic_score -= analysis_config.size_preference_score
+            elif size < analysis_config.min_file_size:
+                heuristic_score -= analysis_config.size_preference_score * 0.5
             
             file['heuristic_score'] = heuristic_score
             scored_files.append(file)
         
         # Sort by heuristic score and take top candidates
         scored_files.sort(key=lambda x: x['heuristic_score'], reverse=True)
-        top_count = min(8, len(scored_files))  # Analyze top 8 files with LLM
+        top_count = min(processing_config.max_analysis_files, len(scored_files))
         return scored_files[:top_count]
     
     def _extract_project_keywords(self, project_context: Dict[str, Any]) -> List[str]:
@@ -194,13 +195,16 @@ class SemanticAnalyzer:
             except Exception as e:
                 logger.error(f"Error analyzing file {file['path']}: {e}")
                 result = file.copy()
-                result['semantic_score'] = 0.1
+                result['semantic_score'] = analysis_config.min_semantic_score
                 result['semantic_analysis'] = f"Analysis error: {str(e)}"
                 return result
     
     async def _analyze_chunk(self, chunk: Dict, file_path: str, project_context: Dict[str, Any]) -> Optional[str]:
         """Analyze a single code chunk with LLM"""
         try:
+            # Truncate content for API limits
+            chunk_content = chunk['content'][:processing_config.file_content_limit]
+            
             prompt = f"""Analyze this code chunk from file '{file_path}' and respond with a JSON object containing:
 - "purpose": Brief description of what this code does (max 50 words)
 - "keywords": List of 3-5 key technical terms/concepts
@@ -208,11 +212,11 @@ class SemanticAnalyzer:
 - "relevance_indicators": List of terms that would make this relevant to different types of issues
 
 Code chunk:
-{chunk['content'][:2000]}"""  # Limit chunk size for API
+{chunk_content}"""
 
             response = await self.openai_client.complete_chat(
                 [{"role": "user", "content": prompt}],
-                model="gpt-4o-mini",  # Use faster, cheaper model for chunk analysis
+                model=model_config.analysis_model,
                 max_retries=1
             )
             
@@ -312,18 +316,18 @@ Code chunk:
         if max_possible_score > 0:
             normalized_score = min(10.0, (score / max_possible_score) * 10)
         else:
-            normalized_score = 0.1
+            normalized_score = analysis_config.min_semantic_score
         
-        return max(0.1, normalized_score)  # Ensure minimum score
+        return max(analysis_config.min_semantic_score, normalized_score)
     
     def _calculate_final_scores(self, files: List[Dict], project_context: Dict[str, Any]) -> List[Dict]:
         """Calculate final relevance scores combining heuristic and semantic scores"""
         for file in files:
             heuristic_score = file.get('heuristic_score', 0.0)
-            semantic_score = file.get('semantic_score', 0.1)
+            semantic_score = file.get('semantic_score', analysis_config.min_semantic_score)
             
-            # Weight the scores (semantic analysis is more important but heuristics help)
-            final_score = (semantic_score * 0.7) + (min(heuristic_score, 10.0) * 0.3)
+            # Weight the scores using configuration
+            final_score = (semantic_score * analysis_config.semantic_weight) + (min(heuristic_score, 10.0) * analysis_config.heuristic_weight)
             
             file['final_relevance_score'] = final_score
         

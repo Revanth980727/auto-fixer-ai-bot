@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 import os
 import logging
 import asyncio
+from core.analysis_config import api_config, model_config, processing_config
 
 logger = logging.getLogger(__name__)
 
@@ -22,17 +23,23 @@ class OpenAIClient:
         try:
             self.client = openai.AsyncOpenAI(
                 api_key=api_key,
-                timeout=90.0  # Increased timeout
+                timeout=api_config.openai_timeout
             )
             logger.info("OpenAI client initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             self.client = None
     
-    async def complete_chat(self, messages: List[Dict[str, str]], model: str = "gpt-4o", max_retries: int = 3) -> str:
+    async def complete_chat(self, messages: List[Dict[str, str]], model: str = None, max_retries: int = None) -> str:
         """Complete a chat conversation with timeout and retry logic"""
         if not self.client:
             raise RuntimeError("OpenAI client not initialized. Check API key and dependencies.")
+        
+        # Use configured defaults if not specified
+        if model is None:
+            model = model_config.default_model
+        if max_retries is None:
+            max_retries = api_config.openai_max_retries
         
         for attempt in range(max_retries):
             try:
@@ -42,10 +49,10 @@ class OpenAIClient:
                     self.client.chat.completions.create(
                         model=model,
                         messages=messages,
-                        max_tokens=3000,  # Increased for longer patches
-                        temperature=0.1
+                        max_tokens=model_config.max_tokens_patch,
+                        temperature=model_config.temperature
                     ),
-                    timeout=60.0  # 60 second timeout per request
+                    timeout=api_config.openai_request_timeout
                 )
                 
                 logger.info(f"OpenAI request successful on attempt {attempt + 1}")
@@ -68,6 +75,10 @@ class OpenAIClient:
         if not self.client:
             return '{"error": "OpenAI client not available", "suggestion": "Check API configuration"}'
         
+        # Truncate content based on configuration
+        truncated_error = error_trace[:processing_config.error_trace_limit]
+        truncated_context = code_context[:processing_config.code_context_limit]
+        
         messages = [
             {
                 "role": "system",
@@ -75,12 +86,16 @@ class OpenAIClient:
             },
             {
                 "role": "user",
-                "content": f"Error trace:\n{error_trace[:2000]}\n\nCode context:\n{code_context[:2000]}\n\nProvide analysis and fix suggestion."
+                "content": f"Error trace:\n{truncated_error}\n\nCode context:\n{truncated_context}\n\nProvide analysis and fix suggestion."
             }
         ]
         
         try:
-            return await self.complete_chat(messages, model="gpt-4o", max_retries=2)
+            return await self.complete_chat(
+                messages, 
+                model=model_config.analysis_model, 
+                max_retries=2
+            )
         except Exception as e:
             logger.error(f"Error in analyze_code_error: {e}")
             return f'{{"error": "Analysis failed: {str(e)}", "suggestion": "Manual review required"}}'
@@ -90,6 +105,11 @@ class OpenAIClient:
         if not self.client:
             return '{"error": "OpenAI client not available", "patch_content": "", "explanation": "API not configured"}'
         
+        # Truncate content based on configuration
+        truncated_analysis = analysis[:processing_config.analysis_content_limit]
+        truncated_content = file_content[:processing_config.file_content_limit]
+        truncated_description = error_description[:processing_config.description_content_limit]
+        
         messages = [
             {
                 "role": "system",
@@ -97,12 +117,16 @@ class OpenAIClient:
             },
             {
                 "role": "user",
-                "content": f"Analysis: {analysis[:1500]}\n\nCurrent file content:\n{file_content[:3000]}\n\nError: {error_description[:500]}\n\nGenerate a patch to fix this issue."
+                "content": f"Analysis: {truncated_analysis}\n\nCurrent file content:\n{truncated_content}\n\nError: {truncated_description}\n\nGenerate a patch to fix this issue."
             }
         ]
         
         try:
-            return await self.complete_chat(messages, model="gpt-4o", max_retries=2)
+            return await self.complete_chat(
+                messages, 
+                model=model_config.patch_generation_model, 
+                max_retries=2
+            )
         except Exception as e:
             logger.error(f"Error in generate_code_patch: {e}")
             return f'{{"error": "Patch generation failed: {str(e)}", "patch_content": "", "explanation": "Manual intervention required"}}'

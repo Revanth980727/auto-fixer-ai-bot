@@ -1,270 +1,233 @@
 
+import asyncio
 import logging
-from typing import List, Dict, Any, Set
+from typing import List, Dict, Any, Optional
 from services.github_client import GitHubClient
 from services.semantic_analyzer import SemanticAnalyzer
 from core.config import config
+from core.analysis_config import analysis_config, file_type_config
 
 logger = logging.getLogger(__name__)
 
 class EnhancedFileSelector:
-    """Enhanced file selection using semantic analysis and intelligent scoring"""
+    """Enhanced file selector with chunked semantic analysis and intelligent scoring"""
     
     def __init__(self):
         self.github_client = GitHubClient()
         self.semantic_analyzer = SemanticAnalyzer()
-        self.max_files = config.max_source_files
     
-    async def select_relevant_files(self, ticket_title: str, ticket_description: str, error_trace: str = "") -> List[Dict[str, Any]]:
-        """Select the most relevant files using semantic analysis"""
+    async def select_most_relevant_files(self, ticket_title: str, ticket_description: str, error_trace: str = "") -> List[Dict[str, Any]]:
+        """Select the most relevant files using enhanced chunked semantic analysis"""
         logger.info(f"🚀 Starting enhanced file selection for: {ticket_title}")
         
-        # Extract error files for context
-        error_files = self._extract_files_from_error_trace(error_trace)
-        
-        # Create project context
-        project_context = {
-            'ticket_title': ticket_title,
-            'ticket_description': ticket_description,
-            'error_trace': error_trace,
-            'error_files': error_files,
-            'repository_name': f"{config.github_repo_owner}/{config.github_repo_name}" if config.github_repo_owner and config.github_repo_name else ""
-        }
-        
-        logger.info(f"📋 Project context: {len(error_files)} error files, repo: {project_context['repository_name']}")
-        
-        # Get repository files
-        repo_tree = await self.github_client.get_repository_tree(config.github_target_branch)
-        if not repo_tree:
-            logger.warning("⚠️ Could not get repository tree - using fallback selection")
-            return await self._fallback_file_selection(error_files)
-        
-        # Filter to code files
-        code_files = self._filter_code_files(repo_tree)
-        logger.info(f"📁 Found {len(code_files)} code files in repository")
-        
-        # Apply duplicate detection and initial filtering
-        filtered_files = self._deduplicate_and_filter(code_files)
-        logger.info(f"🔍 After deduplication and filtering: {len(filtered_files)} files")
-        
-        # Limit to reasonable number for analysis (avoid API costs)
-        analysis_candidates = filtered_files[:20]  # Analyze top 20 candidates max
-        
-        # Fetch file contents for analysis candidates
-        files_with_content = await self._fetch_file_contents(analysis_candidates)
-        logger.info(f"📄 Fetched content for {len(files_with_content)} files")
-        
-        # Perform semantic analysis
-        analyzed_files = await self.semantic_analyzer.analyze_files_for_relevance(
-            files_with_content, project_context
-        )
-        
-        # Select top files
-        selected_files = analyzed_files[:self.max_files]
-        
-        # Add metadata for logging and debugging
-        for file in selected_files:
-            logger.info(f"✅ Selected: {file['path']} (score: {file.get('final_relevance_score', 0):.2f}, semantic: {file.get('semantic_score', 0):.2f})")
-        
-        return selected_files
+        try:
+            # Get all source files from repository
+            all_files = await self._get_all_source_files()
+            
+            if not all_files:
+                logger.warning("No source files found in repository")
+                return []
+            
+            logger.info(f"📁 Found {len(all_files)} total source files")
+            
+            # Prepare project context for analysis
+            project_context = {
+                'ticket_title': ticket_title,
+                'ticket_description': ticket_description,
+                'error_trace': error_trace,
+                'error_files': self._extract_file_names_from_error(error_trace),
+                'repository_name': f"{config.github_repo_owner}/{config.github_repo_name}" if config.github_repo_owner and config.github_repo_name else ""
+            }
+            
+            # Filter files by basic criteria first
+            filtered_files = self._basic_filter_files(all_files)
+            logger.info(f"🔍 After basic filtering: {len(filtered_files)} files")
+            
+            # Apply semantic analysis with chunked processing
+            analyzed_files = await self.semantic_analyzer.analyze_files_for_relevance(filtered_files, project_context)
+            
+            # Select top files based on configured limit
+            selected_files = analyzed_files[:config.max_source_files]
+            
+            # Add metadata to selected files
+            for i, file in enumerate(selected_files):
+                file['selection_rank'] = i + 1
+                file['relevance_score'] = file.get('final_relevance_score', 0)
+                file['selection_method'] = 'enhanced_semantic_chunked'
+            
+            logger.info(f"✅ Selected {len(selected_files)} most relevant files using enhanced analysis")
+            
+            # Log selection summary
+            for file in selected_files:
+                logger.info(f"📄 Selected: {file['path']} (score: {file.get('relevance_score', 0):.2f})")
+            
+            return selected_files
+            
+        except Exception as e:
+            logger.error(f"❌ Enhanced file selection failed: {e}")
+            # Fallback to basic selection
+            return await self._fallback_file_selection()
     
-    def _extract_files_from_error_trace(self, error_trace: str) -> Set[str]:
-        """Extract file paths from error traces and stack traces"""
+    async def _get_all_source_files(self) -> List[Dict[str, Any]]:
+        """Get all source files from the repository with content"""
+        try:
+            # Get repository tree
+            tree = await self.github_client.get_repository_tree(config.github_target_branch)
+            if not tree:
+                logger.warning("No repository tree found")
+                return []
+            
+            # Filter for source code files
+            source_files = []
+            for item in tree:
+                if item.get('type') == 'blob' and self._is_source_file(item['path']):
+                    source_files.append(item)
+            
+            logger.info(f"📂 Found {len(source_files)} potential source files")
+            
+            # Get file contents in parallel
+            content_tasks = []
+            for file_item in source_files:
+                task = self._get_file_with_content(file_item)
+                content_tasks.append(task)
+            
+            # Execute with reasonable concurrency
+            semaphore = asyncio.Semaphore(5)  # Limit to 5 concurrent requests
+            
+            async def bounded_task(task):
+                async with semaphore:
+                    return await task
+            
+            bounded_tasks = [bounded_task(task) for task in content_tasks]
+            files_with_content = await asyncio.gather(*bounded_tasks, return_exceptions=True)
+            
+            # Filter out failed requests
+            valid_files = []
+            for result in files_with_content:
+                if isinstance(result, dict) and result.get('content'):
+                    valid_files.append(result)
+                elif isinstance(result, Exception):
+                    logger.warning(f"Failed to get file content: {result}")
+            
+            logger.info(f"📖 Successfully loaded {len(valid_files)} files with content")
+            return valid_files
+            
+        except Exception as e:
+            logger.error(f"Error getting source files: {e}")
+            return []
+    
+    async def _get_file_with_content(self, file_item: Dict) -> Dict[str, Any]:
+        """Get file with its content"""
+        try:
+            content = await self.github_client.get_file_content(file_item['path'], config.github_target_branch)
+            if content:
+                return {
+                    'path': file_item['path'],
+                    'content': content,
+                    'size': file_item.get('size', len(content)),
+                    'sha': file_item.get('sha', ''),
+                }
+            return {}
+        except Exception as e:
+            logger.warning(f"Failed to get content for {file_item['path']}: {e}")
+            return {}
+    
+    def _is_source_file(self, file_path: str) -> bool:
+        """Check if file is a source code file based on configured extensions"""
+        if not file_path or '.' not in file_path:
+            return False
+        
+        extension = file_path.split('.')[-1].lower()
+        return extension in analysis_config.supported_extensions
+    
+    def _basic_filter_files(self, files: List[Dict]) -> List[Dict]:
+        """Apply basic filtering to remove obviously irrelevant files"""
+        filtered = []
+        
+        for file in files:
+            path = file['path'].lower()
+            size = file.get('size', 0)
+            
+            # Skip if too small or too large
+            if size < analysis_config.min_file_size or size > analysis_config.max_file_size:
+                continue
+            
+            # Skip binary-looking files
+            if any(pattern in path for pattern in ['.git/', '__pycache__/', '.pyc', '.exe', '.bin']):
+                continue
+            
+            # Skip obvious test files for now (they can be added back if needed)
+            if any(test_pattern in path for test_pattern in ['test_', '_test.', '/tests/', '/test/']):
+                continue
+            
+            filtered.append(file)
+        
+        return filtered
+    
+    def _extract_file_names_from_error(self, error_trace: str) -> set:
+        """Extract file names mentioned in error traces"""
         import re
         
-        file_paths = set()
-        
         if not error_trace:
-            return file_paths
+            return set()
         
-        # Enhanced patterns for different error formats
+        # Common patterns for file references in stack traces
         patterns = [
-            r'File "([^"]+\.(?:py|js|ts|tsx|jsx|java|cpp|c|h))"',  # Python style
-            r'at ([^\s]+\.(?:js|ts|tsx|jsx)):\d+',  # JavaScript style
-            r'([^\s]+\.(?:py|js|ts|tsx|jsx|java|cpp|c|h)):\d+',  # Generic with line numbers
-            r'/([a-zA-Z0-9_/]+\.(?:py|js|ts|tsx|jsx|java|cpp|c|h))',  # Unix paths
-            r'\\([a-zA-Z0-9_\\]+\.(?:py|js|ts|tsx|jsx|java|cpp|c|h))',  # Windows paths
-            r'in ([a-zA-Z0-9_]+\.(?:py|js|ts|tsx|jsx))',  # "in filename.py" pattern
-            r'([a-zA-Z0-9_]+\.(?:py|js|ts|tsx|jsx))(?:\s|:|\)|$)',  # Filename at word boundary
+            r'File "([^"]+)"',  # Python traceback
+            r'at ([^\s]+\.py):\d+',  # Python with line numbers
+            r'([^\s/]+\.(py|js|ts|jsx|tsx|java|cpp|c|h))',  # General file extensions
+            r'/([^/\s]+\.(py|js|ts|jsx|tsx|java|cpp|c|h))',  # Files with paths
         ]
         
+        file_names = set()
         for pattern in patterns:
             matches = re.findall(pattern, error_trace, re.IGNORECASE)
             for match in matches:
-                # Clean up the path
-                clean_path = match.strip().lstrip('./\\').replace('\\', '/')
-                if clean_path and len(clean_path) > 0:
-                    file_paths.add(clean_path)
-        
-        return file_paths
-    
-    def _filter_code_files(self, repo_tree: List[Dict]) -> List[Dict]:
-        """Filter repository tree to only include relevant code files"""
-        code_extensions = {'.py', '.js', '.ts', '.tsx', '.jsx', '.java', '.cpp', '.c', '.h', '.cs', '.rb', '.go', '.php', '.rs', '.scala', '.kt'}
-        code_files = []
-        
-        # Directories to skip
-        skip_patterns = [
-            'node_modules/', '.git/', '__pycache__/', '.pytest_cache/', 
-            'dist/', 'build/', '.next/', '.vscode/', '.idea/', 'coverage/',
-            'venv/', 'env/', '.env/', 'target/', 'bin/', 'obj/',
-            'migrations/', 'static/admin/', 'locale/'
-        ]
-        
-        for item in repo_tree:
-            if item.get('type') == 'blob':  # Only files, not directories
-                path = item.get('path', '')
-                
-                # Check if it's a code file
-                if any(path.endswith(ext) for ext in code_extensions):
-                    # Skip certain directories/files
-                    if not any(skip in path for skip in skip_patterns):
-                        # Skip very small files (likely empty or just imports)
-                        size = item.get('size', 0)
-                        if size >= 50:  # At least 50 bytes
-                            code_files.append({
-                                'path': path,
-                                'size': size,
-                                'type': 'blob'
-                            })
-        
-        return code_files
-    
-    def _deduplicate_and_filter(self, code_files: List[Dict]) -> List[Dict]:
-        """Remove duplicate files and apply intelligent filtering"""
-        # Group files by name to detect duplicates
-        file_groups = {}
-        for file in code_files:
-            filename = file['path'].split('/')[-1]
-            if filename not in file_groups:
-                file_groups[filename] = []
-            file_groups[filename].append(file)
-        
-        # Select best file from each group
-        filtered_files = []
-        for filename, group in file_groups.items():
-            if len(group) == 1:
-                # No duplicates, include the file
-                filtered_files.append(group[0])
-            else:
-                # Multiple files with same name, pick the best one
-                best_file = self._select_best_duplicate(group)
-                filtered_files.append(best_file)
-                logger.info(f"🔀 Deduplicated {filename}: selected {best_file['path']} from {len(group)} candidates")
-        
-        # Sort by preference (main files first, then by size)
-        filtered_files.sort(key=lambda f: (
-            -self._get_file_priority(f['path']),  # Higher priority first
-            -f['size']  # Larger files first (within same priority)
-        ))
-        
-        return filtered_files
-    
-    def _select_best_duplicate(self, duplicates: List[Dict]) -> Dict:
-        """Select the best file from a group of duplicates"""
-        # Prefer files in root directory
-        root_files = [f for f in duplicates if '/' not in f['path']]
-        if root_files:
-            return max(root_files, key=lambda f: f['size'])
-        
-        # Prefer files in main directories over subdirectories
-        main_dirs = ['src/', 'lib/', 'app/', 'core/', 'main/']
-        for main_dir in main_dirs:
-            main_files = [f for f in duplicates if f['path'].startswith(main_dir)]
-            if main_files:
-                return max(main_files, key=lambda f: f['size'])
-        
-        # Fall back to largest file
-        return max(duplicates, key=lambda f: f['size'])
-    
-    def _get_file_priority(self, path: str) -> int:
-        """Get priority score for file based on its path and name"""
-        filename = path.split('/')[-1].lower()
-        path_lower = path.lower()
-        
-        # Highest priority: main application files
-        if filename in ['main.py', 'app.py', 'server.py', 'index.js', 'index.ts', 'app.js', 'app.ts']:
-            return 100
-        
-        # High priority: core functionality
-        if any(indicator in filename for indicator in ['core', 'engine', 'manager', 'service', 'client']):
-            return 80
-        
-        # Medium-high priority: API and routes
-        if any(indicator in path_lower for indicator in ['api/', 'routes/', 'controllers/', 'handlers/']):
-            return 70
-        
-        # Medium priority: models and data
-        if any(indicator in path_lower for indicator in ['models/', 'data/', 'entities/', 'schemas/']):
-            return 60
-        
-        # Lower priority: utilities and helpers
-        if any(indicator in path_lower for indicator in ['utils/', 'helpers/', 'tools/', 'lib/']):
-            return 40
-        
-        # Lowest priority: tests and configs
-        if any(indicator in path_lower for indicator in ['test', 'spec', 'config', '__init__']):
-            return 10
-        
-        return 50  # Default priority
-    
-    async def _fetch_file_contents(self, files: List[Dict]) -> List[Dict[str, Any]]:
-        """Fetch file contents for analysis"""
-        files_with_content = []
-        
-        for file_info in files:
-            try:
-                content = await self.github_client.get_file_content(
-                    file_info['path'], 
-                    config.github_target_branch
-                )
-                
-                if content:
-                    files_with_content.append({
-                        'path': file_info['path'],
-                        'content': content,
-                        'size': len(content),
-                        'original_size': file_info.get('size', 0)
-                    })
+                if isinstance(match, tuple):
+                    file_names.add(match[0])
                 else:
-                    logger.warning(f"⚠️ Could not fetch content for {file_info['path']}")
-                    
-            except Exception as e:
-                logger.warning(f"⚠️ Error fetching {file_info['path']}: {e}")
+                    file_names.add(match)
         
-        return files_with_content
+        # Clean up file names (remove leading paths, keep just filename)
+        cleaned_names = set()
+        for name in file_names:
+            clean_name = name.split('/')[-1]  # Get just the filename
+            if clean_name and '.' in clean_name:
+                cleaned_names.add(clean_name)
+        
+        return cleaned_names
     
-    async def _fallback_file_selection(self, error_files: Set[str]) -> List[Dict[str, Any]]:
-        """Fallback selection when repository tree is not available"""
+    async def _fallback_file_selection(self) -> List[Dict[str, Any]]:
+        """Fallback file selection when enhanced analysis fails"""
         logger.info("🔄 Using fallback file selection")
         
-        files_with_content = []
-        
-        # Try to get files mentioned in errors first
-        for file_path in list(error_files)[:self.max_files]:
-            content = await self.github_client.get_file_content(file_path, config.github_target_branch)
-            if content:
-                files_with_content.append({
-                    'path': file_path,
-                    'content': content,
-                    'final_relevance_score': 10.0,
-                    'size': len(content)
-                })
-        
-        # If we still need more files, try common patterns
-        if len(files_with_content) < self.max_files:
-            common_files = ['main.py', 'app.py', 'server.py', 'index.js', 'index.ts', '__init__.py', 'setup.py']
-            for file_path in common_files:
-                if len(files_with_content) >= self.max_files:
-                    break
+        try:
+            # Get repository tree
+            tree = await self.github_client.get_repository_tree(config.github_target_branch)
+            if not tree:
+                return []
+            
+            # Simple heuristic selection
+            important_files = []
+            for item in tree:
+                if item.get('type') == 'blob':
+                    path = item['path']
+                    filename = path.split('/')[-1].lower()
                     
-                content = await self.github_client.get_file_content(file_path, config.github_target_branch)
-                if content:
-                    files_with_content.append({
-                        'path': file_path,
-                        'content': content,
-                        'final_relevance_score': 5.0,
-                        'size': len(content)
-                    })
-        
-        return files_with_content
+                    # Look for obviously important files
+                    if any(important in filename for important in analysis_config.main_indicators):
+                        content = await self.github_client.get_file_content(path, config.github_target_branch)
+                        if content:
+                            important_files.append({
+                                'path': path,
+                                'content': content,
+                                'size': len(content),
+                                'relevance_score': 5.0,
+                                'selection_method': 'fallback_heuristic'
+                            })
+            
+            return important_files[:config.max_source_files]
+            
+        except Exception as e:
+            logger.error(f"Fallback selection also failed: {e}")
+            return []

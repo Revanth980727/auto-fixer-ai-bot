@@ -3,6 +3,7 @@ import ast
 import re
 import logging
 from typing import List, Dict, Any, Optional, Tuple
+from core.analysis_config import processing_config, file_type_config
 
 logger = logging.getLogger(__name__)
 
@@ -10,18 +11,19 @@ class CodePreprocessor:
     """Preprocesses code files for semantic analysis by removing noise and chunking intelligently"""
     
     def __init__(self):
-        self.max_chunk_tokens = 600  # Target chunk size
-        self.overlap_tokens = 100    # Overlap between chunks
+        self.max_chunk_tokens = processing_config.max_chunk_tokens
+        self.overlap_tokens = processing_config.overlap_tokens
     
     def preprocess_file(self, file_path: str, content: str) -> Dict[str, Any]:
         """Main preprocessing pipeline that cleans and chunks code"""
         try:
             # Determine file type and apply appropriate preprocessing
             file_ext = file_path.split('.')[-1].lower()
+            language = file_type_config.get_language_for_extension(file_ext)
             
-            if file_ext == 'py':
+            if language == 'python':
                 return self._preprocess_python(content)
-            elif file_ext in ['js', 'ts', 'jsx', 'tsx']:
+            elif language == 'javascript':
                 return self._preprocess_javascript(content)
             else:
                 return self._preprocess_generic(content)
@@ -80,6 +82,9 @@ class CodePreprocessor:
     
     def _preprocess_javascript(self, content: str) -> Dict[str, Any]:
         """Preprocess JavaScript/TypeScript files using regex patterns"""
+        # Get comment patterns for JavaScript
+        comment_patterns = file_type_config.comment_patterns.get('javascript', {})
+        
         # Remove comments
         content = re.sub(r'//.*$', '', content, flags=re.MULTILINE)
         content = re.sub(r'/\*.*?\*/', '', content, flags=re.DOTALL)
@@ -186,11 +191,15 @@ class CodePreprocessor:
         current_chunk = ""
         current_blocks = []
         
+        # Use configured token estimation
+        chars_per_token = processing_config.chars_per_token
+        max_chars = self.max_chunk_tokens * chars_per_token
+        
         for block in code_blocks:
             block_content = f"# {block['type']}: {block['name']}\n{block['content']}\n\n"
             
             # If adding this block would exceed chunk size, save current chunk
-            if len(current_chunk + block_content) > self.max_chunk_tokens * 4:  # Rough token estimation
+            if len(current_chunk + block_content) > max_chars:
                 if current_chunk:
                     chunks.append({
                         'content': current_chunk.strip(),
@@ -226,8 +235,8 @@ class CodePreprocessor:
         if max_tokens is None:
             max_tokens = self.max_chunk_tokens
         
-        # Rough token estimation: ~4 characters per token
-        chars_per_token = 4
+        # Use configured token estimation
+        chars_per_token = processing_config.chars_per_token
         max_chars = max_tokens * chars_per_token
         overlap_chars = self.overlap_tokens * chars_per_token
         

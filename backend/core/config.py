@@ -87,7 +87,67 @@ class Config:
         # Validate and warn about missing configurations
         self._validate_and_warn_configuration()
     
-    # ... keep existing code (_parse_list, _validate_and_warn_configuration, get_jira_jql, validate_required_config methods)
+    def _parse_list(self, value: str) -> List[str]:
+        """Parse comma-separated environment variable into list"""
+        if not value:
+            return []
+        return [item.strip() for item in value.split(',') if item.strip()]
+    
+    def _validate_and_warn_configuration(self):
+        """Validate configuration and warn about missing required settings"""
+        warnings = []
+        
+        if not self.openai_api_key:
+            warnings.append("OpenAI API key not configured - AI agents will not function")
+        
+        if not self.jira_api_token or not self.jira_base_url:
+            warnings.append("JIRA configuration incomplete - ticket polling will not work")
+        
+        if not self.github_token or not self.github_repo_owner or not self.github_repo_name:
+            warnings.append("GitHub configuration incomplete - code analysis and patch application will not work")
+        
+        for warning in warnings:
+            logger.warning(f"⚠️ Configuration Warning: {warning}")
+    
+    def get_jira_jql(self) -> str:
+        """Generate JQL query for JIRA ticket polling"""
+        issue_types = "','".join(self.jira_issue_types)
+        statuses = "','".join(self.jira_statuses)
+        
+        jql = f"""
+        project = '{self.jira_project_key}' 
+        AND issueType IN ('{issue_types}') 
+        AND status IN ('{statuses}') 
+        AND updated >= -{self.jira_poll_hours}h
+        ORDER BY priority DESC, updated DESC
+        """
+        
+        return " ".join(jql.split())
+    
+    def validate_required_config(self) -> Dict[str, Any]:
+        """Validate that all required configuration is present"""
+        validation_result = {
+            "valid": True,
+            "missing_configs": [],
+            "warnings": []
+        }
+        
+        # Required configurations
+        required_configs = {
+            "OPENAI_API_KEY": self.openai_api_key,
+            "JIRA_API_TOKEN": self.jira_api_token,
+            "JIRA_BASE_URL": self.jira_base_url,
+            "GITHUB_TOKEN": self.github_token,
+            "GITHUB_REPO_OWNER": self.github_repo_owner,
+            "GITHUB_REPO_NAME": self.github_repo_name
+        }
+        
+        for config_name, config_value in required_configs.items():
+            if not config_value:
+                validation_result["missing_configs"].append(config_name)
+                validation_result["valid"] = False
+        
+        return validation_result
     
     def get_github_status(self) -> Dict[str, Any]:
         """Get GitHub configuration status"""
