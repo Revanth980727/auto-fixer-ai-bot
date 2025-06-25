@@ -6,6 +6,7 @@ from services.openai_client import OpenAIClient
 from services.github_client import GitHubClient
 from services.json_response_handler import JSONResponseHandler
 from services.large_file_handler import LargeFileHandler
+from services.semantic_evaluator import SemanticEvaluator
 from typing import Dict, Any, Optional
 import json
 import asyncio
@@ -21,11 +22,12 @@ class DeveloperAgent(BaseAgent):
         self.github_client = GitHubClient()
         self.json_handler = JSONResponseHandler()
         self.file_handler = LargeFileHandler()
+        self.semantic_evaluator = SemanticEvaluator()
         self.large_file_threshold = 15000  # Force chunking for files over 15KB
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate intelligent code patches with forced chunking for large files"""
-        self.log_execution(execution_id, "🚀 Starting enhanced developer agent with forced large file chunking")
+        """Generate intelligent code patches with semantic evaluation and relevance filtering"""
+        self.log_execution(execution_id, "🚀 Starting enhanced developer agent with semantic evaluation")
         
         if not context:
             self.log_execution(execution_id, "❌ No context provided - developer agent requires planner analysis")
@@ -43,20 +45,26 @@ class DeveloperAgent(BaseAgent):
             self.log_execution(execution_id, "❌ No source files available - cannot generate patches")
             raise Exception("No source files available for patch generation")
         
-        self.log_execution(execution_id, f"📁 Processing {len(source_files)} files with enhanced large file handling")
+        self.log_execution(execution_id, f"📁 Processing {len(source_files)} files with semantic evaluation")
         
         # Analyze file sizes and processing strategy
         for file_info in source_files:
             file_size = len(file_info['content'])
             self.log_execution(execution_id, f"📊 {file_info['path']}: {file_size} characters")
             if file_size > self.large_file_threshold:
-                self.log_execution(execution_id, f"🧩 {file_info['path']} will use CHUNKING strategy (size: {file_size})")
+                self.log_execution(execution_id, f"🧩 {file_info['path']} will use SEMANTIC CHUNKING strategy (size: {file_size})")
             else:
-                self.log_execution(execution_id, f"📝 {file_info['path']} will use SINGLE FILE strategy")
+                self.log_execution(execution_id, f"📝 {file_info['path']} will use ENHANCED SINGLE FILE strategy")
         
-        # Generate patches with enforced strategies
+        # Generate patches with semantic evaluation
         patches = []
         total_files = len(source_files)
+        semantic_stats = {
+            "total_patches_generated": 0,
+            "patches_accepted": 0,
+            "patches_rejected": 0,
+            "files_with_no_relevant_fixes": 0
+        }
         
         for i, file_info in enumerate(source_files, 1):
             self.log_execution(execution_id, f"🔧 Processing file {i}/{total_files}: {file_info['path']}")
@@ -68,22 +76,29 @@ class DeveloperAgent(BaseAgent):
             try:
                 # Set processing timeout based on file size
                 file_size = len(file_info['content'])
-                timeout = 300.0 if file_size > self.large_file_threshold else 180.0
+                timeout = 360.0 if file_size > self.large_file_threshold else 240.0
                 
                 self.log_execution(execution_id, f"⏱️ Setting timeout to {timeout}s for {file_info['path']}")
                 
-                # Use enhanced patch generation with strict timeout
+                # Use enhanced patch generation with semantic evaluation
                 patch_data = await asyncio.wait_for(
-                    self._generate_patch_with_strategy(ticket, file_info, planner_data, execution_id),
+                    self._generate_patch_with_semantic_evaluation(ticket, file_info, planner_data, execution_id),
                     timeout=timeout
                 )
                 
                 if patch_data:
                     patches.append(patch_data)
                     await self._save_patch_attempt_safely(ticket, execution_id, patch_data)
-                    self.log_execution(execution_id, f"✅ SUCCESS: Generated patch for {file_info['path']}")
+                    
+                    # Update semantic stats
+                    semantic_stats["total_patches_generated"] += 1
+                    if patch_data.get('semantic_evaluation', {}).get('accepted_count', 0) > 0:
+                        semantic_stats["patches_accepted"] += 1
+                    
+                    self.log_execution(execution_id, f"✅ SUCCESS: Generated semantically validated patch for {file_info['path']}")
                 else:
-                    self.log_execution(execution_id, f"❌ FAILED: Could not generate valid patch for {file_info['path']}")
+                    semantic_stats["files_with_no_relevant_fixes"] += 1
+                    self.log_execution(execution_id, f"⚠️ NO RELEVANT FIX: No semantically relevant patches found for {file_info['path']}")
                     
             except asyncio.TimeoutError:
                 self.log_execution(execution_id, f"⏰ TIMEOUT: Patch generation for {file_info['path']} exceeded timeout")
@@ -93,43 +108,54 @@ class DeveloperAgent(BaseAgent):
                 continue
         
         if not patches:
-            self.log_execution(execution_id, "💥 CRITICAL: Failed to generate any valid patches")
-            raise Exception("No valid patches could be generated - all strategies failed")
+            self.log_execution(execution_id, "💥 CRITICAL: No semantically relevant patches generated")
+            raise Exception("No semantically relevant patches could be generated - all fixes were below quality thresholds")
+        
+        # Log semantic evaluation summary
+        self.log_execution(execution_id, f"🧠 SEMANTIC EVALUATION SUMMARY:")
+        self.log_execution(execution_id, f"  - Files processed: {total_files}")
+        self.log_execution(execution_id, f"  - Patches generated: {semantic_stats['total_patches_generated']}")
+        self.log_execution(execution_id, f"  - High-quality patches: {semantic_stats['patches_accepted']}")
+        self.log_execution(execution_id, f"  - Files with no relevant fixes: {semantic_stats['files_with_no_relevant_fixes']}")
         
         result = {
             "patches_generated": len(patches),
             "patches": patches,
             "planner_analysis": planner_data,
-            "enhanced_processing": True,
-            "large_file_handling": True,
-            "processing_summary": f"Successfully processed {len(patches)}/{total_files} files"
+            "semantic_evaluation_enabled": True,
+            "processing_summary": f"Generated {len(patches)} semantically validated patches from {total_files} files",
+            "semantic_stats": semantic_stats,
+            "quality_thresholds": {
+                "confidence_threshold": self.semantic_evaluator.confidence_threshold,
+                "relevance_threshold": self.semantic_evaluator.relevance_threshold
+            }
         }
         
-        self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} patches successfully")
+        self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} semantically validated patches")
         return result
     
-    async def _generate_patch_with_strategy(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate patch using appropriate strategy based on file size"""
+    async def _generate_patch_with_semantic_evaluation(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
+        """Generate patch using appropriate strategy with semantic evaluation"""
         file_size = len(file_info['content'])
         
-        # Force chunking for large files
+        # Force chunking for large files with semantic evaluation
         if file_size > self.large_file_threshold:
-            self.log_execution(execution_id, f"🧩 FORCED CHUNKING: {file_info['path']} ({file_size} chars > {self.large_file_threshold})")
-            return await self._generate_chunked_patch(ticket, file_info, analysis, execution_id)
+            self.log_execution(execution_id, f"🧩 SEMANTIC CHUNKING: {file_info['path']} ({file_size} chars > {self.large_file_threshold})")
+            return await self._generate_semantically_evaluated_chunked_patch(ticket, file_info, analysis, execution_id)
         else:
-            self.log_execution(execution_id, f"📝 SINGLE FILE: {file_info['path']} ({file_size} chars)")
-            return await self._generate_single_file_patch(ticket, file_info, analysis, execution_id)
+            self.log_execution(execution_id, f"📝 ENHANCED SINGLE FILE: {file_info['path']} ({file_size} chars)")
+            return await self._generate_semantically_evaluated_single_patch(ticket, file_info, analysis, execution_id)
     
-    async def _generate_single_file_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate patch for a single file with enhanced monitoring"""
+    async def _generate_semantically_evaluated_single_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
+        """Generate semantically evaluated patch for a single file"""
         try:
-            self.log_execution(execution_id, f"📝 Starting single file patch generation for {file_info['path']}")
+            self.log_execution(execution_id, f"📝 Starting enhanced single file patch generation for {file_info['path']}")
             
-            # Generate the fix with enhanced context
+            # Generate the fix with enhanced context and relevance requirements
             patch_prompt = f"""
 You are an expert software engineer with deep understanding of code architecture and debugging.
 
-TICKET INFORMATION:
+TICKET INFORMATION (CRITICAL - ANALYZE CAREFULLY):
 Title: {ticket.title}
 Description: {ticket.description}
 Error Trace: {ticket.error_trace or 'No error trace provided'}
@@ -147,13 +173,15 @@ PLANNER CONTEXT:
 Root Cause: {analysis.get('root_cause', 'Unknown')}
 Suggested Approach: {analysis.get('suggested_approach', 'Standard debugging approach')}
 
-REQUIREMENTS FOR FIX:
-1. Generate a PRECISE UNIFIED DIFF PATCH that fixes the specific issue
-2. Consider the ENTIRE file context when making changes
-3. Ensure the fix doesn't break existing functionality
-4. Make minimal but effective changes
+CRITICAL INSTRUCTIONS:
+1. ONLY propose a fix if it directly resolves the issue described in the ticket
+2. If this file doesn't contain code related to the issue, return confidence_score: 0.1
+3. Consider the ENTIRE file context when making changes
+4. Ensure the fix doesn't break existing functionality
+5. Make minimal but effective changes
+6. Provide clear justification for why this change addresses the issue
 
-RESPONSE FORMAT (JSON ONLY):
+REQUIRED RESPONSE FORMAT (JSON ONLY):
 {{
     "patch_content": "unified diff format patch with proper headers and line numbers",
     "patched_code": "complete file content after applying the fix",
@@ -161,20 +189,22 @@ RESPONSE FORMAT (JSON ONLY):
     "commit_message": "detailed commit message explaining the fix",
     "confidence_score": 0.95,
     "explanation": "detailed technical explanation of the problem and solution",
+    "justification": "Why do you think this change addresses the issue?",
     "base_file_hash": "{file_info['hash']}",
-    "patch_type": "unified_diff"
+    "patch_type": "enhanced_unified_diff",
+    "addresses_issue": true
 }}
 
-CRITICAL: Generate ONLY valid JSON. The patch must be a proper unified diff that can be applied.
+CRITICAL: Generate ONLY valid JSON. If you're not confident this file contains the issue, set confidence_score to 0.1 and addresses_issue to false.
 """
             
-            self.log_execution(execution_id, f"🤖 Sending single file patch request for {file_info['path']}")
+            self.log_execution(execution_id, f"🤖 Sending enhanced single file patch request for {file_info['path']}")
             
-            # Use GPT-4o for better analysis with reduced timeout
+            # Use GPT-4.1 for better analysis
             response = await self.openai_client.complete_chat([
-                {"role": "system", "content": "You are an expert software engineer specializing in precise code fixes. Generate only valid JSON responses with proper unified diff patches."},
+                {"role": "system", "content": "You are an expert software engineer specializing in precise, relevant code fixes. Only propose fixes that directly address the stated issue. Generate only valid JSON responses."},
                 {"role": "user", "content": patch_prompt}
-            ], model="gpt-4o")
+            ], model="gpt-4.1-2025-04-14")
             
             self.log_execution(execution_id, f"📨 Response received for {file_info['path']}, length: {len(response)}")
             
@@ -191,63 +221,63 @@ CRITICAL: Generate ONLY valid JSON. The patch must be a proper unified diff that
                 self.log_execution(execution_id, f"❌ Patch validation failed for {file_info['path']}: {validation_error}")
                 return None
             
+            # Perform semantic evaluation
+            jira_context = {
+                'title': ticket.title,
+                'description': ticket.description,
+                'error_trace': ticket.error_trace or ''
+            }
+            
+            evaluation = await self.semantic_evaluator.evaluate_patch_relevance(patch_data, jira_context)
+            should_accept, reason = self.semantic_evaluator.should_accept_patch(patch_data, evaluation)
+            
+            if not should_accept:
+                self.log_execution(execution_id, f"❌ Patch rejected for {file_info['path']}: {reason}")
+                return None
+            
             # Add metadata
             patch_data["target_file"] = file_info["path"]
             patch_data["file_size"] = len(file_info["content"])
-            patch_data["processing_strategy"] = "single_file"
+            patch_data["processing_strategy"] = "enhanced_single_file"
+            patch_data["semantic_evaluation"] = evaluation
+            patch_data["selection_reason"] = reason
             
             confidence = patch_data.get('confidence_score', 0)
-            self.log_execution(execution_id, f"🎯 Single file patch generated for {file_info['path']} with confidence {confidence}")
+            relevance = evaluation.get('relevance_score', 0)
+            self.log_execution(execution_id, f"🎯 Enhanced single file patch accepted for {file_info['path']} - Confidence: {confidence:.3f}, Relevance: {relevance:.3f}")
             return patch_data
             
         except Exception as e:
-            self.log_execution(execution_id, f"💥 Single file generation error for {file_info['path']}: {str(e)}")
+            self.log_execution(execution_id, f"💥 Enhanced single file generation error for {file_info['path']}: {str(e)}")
             return None
     
-    async def _generate_chunked_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate patch using chunking strategy for large files"""
+    async def _generate_semantically_evaluated_chunked_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
+        """Generate semantically evaluated patch using chunking strategy for large files"""
         try:
-            self.log_execution(execution_id, f"🧩 Starting chunked processing for {file_info['path']}")
+            self.log_execution(execution_id, f"🧩 Starting semantic chunked processing for {file_info['path']}")
             
-            # Create file chunks
+            # Create file chunks with smart overlap
             chunks = self.file_handler.create_file_chunks(file_info['content'], file_info['path'])
-            self.log_execution(execution_id, f"📦 Created {len(chunks)} chunks for {file_info['path']}")
+            self.log_execution(execution_id, f"📦 Created {len(chunks)} chunks with smart overlap for {file_info['path']}")
             
-            # Process each chunk with progress tracking
+            # Process each chunk with enhanced prompts
             chunk_patches = []
             for chunk in chunks:
                 chunk_num = chunk['chunk_id'] + 1
                 total_chunks = len(chunks)
                 
                 self.log_execution(execution_id, f"🔧 Processing chunk {chunk_num}/{total_chunks} for {file_info['path']}")
-                self.log_execution(execution_id, f"📋 Chunk {chunk_num}: lines {chunk['start_line']}-{chunk['end_line']}")
+                self.log_execution(execution_id, f"📋 Chunk {chunk_num}: lines {chunk['start_line']}-{chunk['end_line']} (overlap: {chunk.get('overlap_lines', 0)} lines)")
                 
                 chunk_context = self.file_handler.create_chunk_context(chunk, file_info, ticket)
                 
-                chunk_prompt = f"""
-{chunk_context}
-
-RESPONSE FORMAT (JSON ONLY):
-{{
-    "patch_content": "unified diff patch for this chunk only",
-    "patched_code": "this chunk content after applying the fix",
-    "confidence_score": 0.95,
-    "explanation": "explanation of changes made in this chunk",
-    "chunk_id": {chunk['chunk_id']},
-    "start_line": {chunk['start_line']},
-    "end_line": {chunk['end_line']}
-}}
-
-Generate ONLY valid JSON.
-"""
-                
                 try:
-                    self.log_execution(execution_id, f"🤖 Sending chunk {chunk_num} request")
+                    self.log_execution(execution_id, f"🤖 Sending enhanced chunk {chunk_num} request")
                     
                     response = await self.openai_client.complete_chat([
-                        {"role": "system", "content": "You are an expert software engineer analyzing code chunks. Generate only valid JSON responses."},
-                        {"role": "user", "content": chunk_prompt}
-                    ], model="gpt-4o")
+                        {"role": "system", "content": "You are an expert software engineer analyzing code chunks with strict relevance requirements. Only propose fixes that directly address the stated issue. Generate only valid JSON responses."},
+                        {"role": "user", "content": chunk_context}
+                    ], model="gpt-4.1-2025-04-14")
                     
                     self.log_execution(execution_id, f"📨 Chunk {chunk_num} response received")
                     
@@ -256,7 +286,9 @@ Generate ONLY valid JSON.
                     
                     if chunk_data and chunk_data.get('confidence_score', 0) > 0.3:
                         chunk_patches.append(chunk_data)
-                        self.log_execution(execution_id, f"✅ Chunk {chunk_num} processed successfully (confidence: {chunk_data.get('confidence_score', 0)})")
+                        confidence = chunk_data.get('confidence_score', 0)
+                        addresses_issue = chunk_data.get('addresses_issue', False)
+                        self.log_execution(execution_id, f"✅ Chunk {chunk_num} processed - Confidence: {confidence:.3f}, Addresses Issue: {addresses_issue}")
                     else:
                         self.log_execution(execution_id, f"⚠️ Chunk {chunk_num} had low confidence or failed parsing")
                         
@@ -264,25 +296,48 @@ Generate ONLY valid JSON.
                     self.log_execution(execution_id, f"💥 Error processing chunk {chunk_num}: {e}")
                     continue
             
-            # Combine chunk patches
+            # Use enhanced semantic combination
             if not chunk_patches:
                 self.log_execution(execution_id, f"❌ No valid chunk patches for {file_info['path']}")
                 return None
             
-            self.log_execution(execution_id, f"🔗 Combining {len(chunk_patches)} chunk patches for {file_info['path']}")
-            combined_patch = self.file_handler.combine_chunk_patches(chunk_patches, file_info)
+            self.log_execution(execution_id, f"🔗 Starting semantic evaluation and combination of {len(chunk_patches)} chunk patches for {file_info['path']}")
+            combined_patch = await self.file_handler.combine_chunk_patches(chunk_patches, file_info, ticket)
             
             if combined_patch:
-                self.log_execution(execution_id, f"✅ Successfully combined chunk patches for {file_info['path']}")
-                combined_patch["processing_strategy"] = "chunked"
-                combined_patch["chunks_processed"] = len(chunk_patches)
+                self.log_execution(execution_id, f"✅ Successfully combined semantically validated chunk patches for {file_info['path']}")
+                combined_patch["processing_strategy"] = "semantic_chunked"
                 return combined_patch
             else:
-                self.log_execution(execution_id, f"❌ Failed to combine chunk patches for {file_info['path']}")
+                self.log_execution(execution_id, f"❌ Semantic evaluation rejected all chunk patches for {file_info['path']}")
                 return None
                 
         except Exception as e:
-            self.log_execution(execution_id, f"💥 Chunked processing error for {file_info['path']}: {e}")
+            self.log_execution(execution_id, f"💥 Semantic chunked processing error for {file_info['path']}: {e}")
             return None
 
     # ... keep existing code (_save_patch_attempt_safely method)
+    async def _save_patch_attempt_safely(self, ticket: Ticket, execution_id: int, patch_data: Dict[str, Any]):
+        """Save patch attempt to database with proper error handling"""
+        try:
+            db = get_sync_db()
+            patch_attempt = PatchAttempt(
+                ticket_id=ticket.id,
+                agent_execution_id=execution_id,
+                target_file=patch_data.get("target_file", "unknown"),
+                patch_content=patch_data.get("patch_content", ""),
+                confidence_score=patch_data.get("confidence_score", 0.0),
+                explanation=patch_data.get("explanation", ""),
+                patch_type=patch_data.get("patch_type", "unknown"),
+                metadata=json.dumps({
+                    "commit_message": patch_data.get("commit_message", ""),
+                    "base_file_hash": patch_data.get("base_file_hash", ""),
+                    "processing_strategy": patch_data.get("processing_strategy", "unknown"),
+                    "semantic_evaluation": patch_data.get("semantic_evaluation", {}),
+                    "selection_reason": patch_data.get("selection_reason", "")
+                })
+            )
+            db.add(patch_attempt)
+            db.commit()
+        except Exception as e:
+            logger.error(f"Failed to save patch attempt: {e}")

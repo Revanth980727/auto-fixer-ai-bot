@@ -1,24 +1,27 @@
+
 import hashlib
 import logging
 from typing import Dict, Any, List, Optional, Tuple
 from services.openai_client import OpenAIClient
+from services.semantic_evaluator import SemanticEvaluator
 
 logger = logging.getLogger(__name__)
 
 class LargeFileHandler:
-    """Handler for processing large files with aggressive chunking and incremental patching"""
+    """Handler for processing large files with aggressive chunking and semantic evaluation"""
     
     def __init__(self):
         self.openai_client = OpenAIClient()
+        self.semantic_evaluator = SemanticEvaluator()
         self.chunk_size_limit = 12000  # Reduced from 15000 for better processing
-        self.context_overlap = 300     # Reduced overlap for efficiency
+        self.context_overlap_lines = 8  # Smart overlap: 5-10 lines for better context
     
     def should_chunk_file(self, file_content: str) -> bool:
         """Determine if file should be processed in chunks - more aggressive"""
         return len(file_content) > self.chunk_size_limit
     
     def create_file_chunks(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
-        """Create optimized chunks for large files"""
+        """Create optimized chunks with smart overlap for context preservation"""
         if not self.should_chunk_file(file_content):
             return [{
                 "content": file_content,
@@ -41,22 +44,21 @@ class LargeFileHandler:
         min_lines_per_chunk = 20
         lines_per_chunk = max(lines_per_chunk, min_lines_per_chunk)
         
-        logger.info(f"Chunking {file_path}: {len(lines)} lines into ~{lines_per_chunk} lines per chunk")
+        logger.info(f"Chunking {file_path}: {len(lines)} lines into ~{lines_per_chunk} lines per chunk with {self.context_overlap_lines}-line overlap")
         
         start_line = 0
         while start_line < len(lines):
             end_line = min(start_line + lines_per_chunk, len(lines))
             
-            # Add minimal overlap from previous chunk
-            overlap_lines = self.context_overlap // 50  # Approximately 6 lines
-            chunk_start = max(0, start_line - overlap_lines)
-            chunk_content = ''.join(lines[chunk_start:end_line])
+            # Add smart overlap from previous chunk for context preservation
+            overlap_start = max(0, start_line - self.context_overlap_lines)
+            chunk_content = ''.join(lines[overlap_start:end_line])
             
             # Ensure chunk isn't too large
             if len(chunk_content) > self.chunk_size_limit:
                 # Reduce chunk size if it's still too large
                 reduced_end = start_line + (lines_per_chunk // 2)
-                chunk_content = ''.join(lines[chunk_start:reduced_end])
+                chunk_content = ''.join(lines[overlap_start:reduced_end])
                 end_line = reduced_end
             
             chunks.append({
@@ -65,12 +67,13 @@ class LargeFileHandler:
                 "end_line": end_line,
                 "chunk_id": chunk_id,
                 "is_single_chunk": False,
-                "overlap_start": chunk_start,
+                "overlap_start": overlap_start + 1,  # 1-based
+                "overlap_lines": self.context_overlap_lines,
                 "total_chunks": 0,  # Will be filled later
                 "size": len(chunk_content)
             })
             
-            start_line = end_line - overlap_lines
+            start_line = end_line - self.context_overlap_lines
             chunk_id += 1
             
             # Safety limit to prevent infinite loops
@@ -82,22 +85,32 @@ class LargeFileHandler:
         for chunk in chunks:
             chunk["total_chunks"] = len(chunks)
         
-        logger.info(f"Created {len(chunks)} optimized chunks for {file_path}")
+        logger.info(f"Created {len(chunks)} optimized chunks with smart overlap for {file_path}")
         for i, chunk in enumerate(chunks):
-            logger.info(f"  Chunk {i+1}: lines {chunk['start_line']}-{chunk['end_line']}, size: {chunk['size']} chars")
+            logger.info(f"  Chunk {i+1}: lines {chunk['start_line']}-{chunk['end_line']} (overlap from {chunk.get('overlap_start', 'N/A')}), size: {chunk['size']} chars")
         
         return chunks
     
     def create_chunk_context(self, chunk: Dict[str, Any], file_info: Dict[str, Any], ticket) -> str:
-        """Create focused context for a specific chunk"""
+        """Create enhanced context for chunk with explicit relevance requirements"""
+        overlap_info = ""
+        if not chunk.get('is_single_chunk', False):
+            overlap_info = f"""
+OVERLAP INFO:
+- This chunk includes {chunk.get('overlap_lines', 0)} lines of overlap from the previous section for context
+- Overlap starts at line {chunk.get('overlap_start', 'N/A')}
+- Focus on lines {chunk['start_line']}-{chunk['end_line']} for actual changes
+"""
+        
         return f"""
-CHUNK ANALYSIS CONTEXT:
+ENHANCED CHUNK ANALYSIS CONTEXT:
 File: {file_info['path']}
 Chunk {chunk['chunk_id'] + 1}/{chunk['total_chunks']}
 Lines {chunk['start_line']}-{chunk['end_line']}
 Content Length: {len(chunk['content'])} characters
+{overlap_info}
 
-ISSUE TO FIX:
+ISSUE TO FIX (CRITICAL - READ CAREFULLY):
 Title: {ticket.title}
 Description: {ticket.description}
 Error Trace: {ticket.error_trace or 'No error trace provided'}
@@ -107,54 +120,149 @@ CHUNK CONTENT:
 {chunk['content']}
 ```
 
-INSTRUCTIONS:
-Focus on this specific section of the file. If the issue is not in this chunk, 
-return confidence_score: 0.1 and explanation stating this chunk doesn't contain the issue.
-If you find the issue, provide a targeted fix for just this section.
+CRITICAL INSTRUCTIONS:
+1. ONLY propose a fix if it directly resolves the issue described above
+2. If this chunk doesn't contain code related to the issue, return confidence_score: 0.1
+3. Analyze the problem thoroughly before proposing any changes
+4. Consider the broader context and don't break existing functionality
+
+REQUIRED RESPONSE FORMAT (JSON ONLY):
+{{
+    "confidence_score": 0.95,
+    "relevance_score": 0.90,
+    "patch_content": "unified diff format patch for this chunk only",
+    "patched_code": "this chunk content after applying the fix",
+    "explanation": "detailed technical explanation of the problem and solution",
+    "justification": "Why do you think this change addresses the issue?",
+    "chunk_id": {chunk['chunk_id']},
+    "start_line": {chunk['start_line']},
+    "end_line": {chunk['end_line']},
+    "addresses_issue": true
+}}
+
+IMPORTANT: Generate ONLY valid JSON. If you're not confident this chunk contains the issue, set confidence_score to 0.1 and addresses_issue to false.
 """
     
-    def combine_chunk_patches(self, chunk_patches: List[Dict[str, Any]], file_info: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-        """Combine multiple chunk patches into a single file patch"""
-        # Filter patches with reasonable confidence
-        valid_patches = [p for p in chunk_patches if p.get('confidence_score', 0) > 0.5]
-        
-        if not valid_patches:
-            logger.warning(f"No valid chunk patches found for {file_info['path']}")
+    async def combine_chunk_patches(self, chunk_patches: List[Dict[str, Any]], file_info: Dict[str, Any], ticket) -> Optional[Dict[str, Any]]:
+        """Combine multiple chunk patches with semantic evaluation and intelligent filtering"""
+        if not chunk_patches:
+            logger.warning(f"No chunk patches provided for {file_info['path']}")
             return None
         
-        # If only one valid patch, return it
-        if len(valid_patches) == 1:
-            return valid_patches[0]
+        logger.info(f"🧠 Starting intelligent patch combination for {file_info['path']} with {len(chunk_patches)} patches")
         
-        # Combine multiple patches
+        # Evaluate each patch for relevance
+        evaluated_patches = []
+        for patch in chunk_patches:
+            try:
+                # Create JIRA issue context for evaluation
+                jira_context = {
+                    'title': ticket.title,
+                    'description': ticket.description,
+                    'error_trace': ticket.error_trace or ''
+                }
+                
+                # Evaluate semantic relevance
+                evaluation = await self.semantic_evaluator.evaluate_patch_relevance(patch, jira_context)
+                
+                # Check if patch should be accepted
+                should_accept, reason = self.semantic_evaluator.should_accept_patch(patch, evaluation)
+                
+                patch_info = {
+                    'patch': patch,
+                    'evaluation': evaluation,
+                    'should_accept': should_accept,
+                    'reason': reason,
+                    'combined_score': (patch.get('confidence_score', 0) * 0.6) + (evaluation.get('relevance_score', 0) * 0.4)
+                }
+                
+                evaluated_patches.append(patch_info)
+                
+                logger.info(f"📊 Chunk {patch.get('chunk_id', 'N/A')} evaluation:")
+                logger.info(f"  - Confidence: {patch.get('confidence_score', 0):.3f}")
+                logger.info(f"  - Relevance: {evaluation.get('relevance_score', 0):.3f}")
+                logger.info(f"  - Combined: {patch_info['combined_score']:.3f}")
+                logger.info(f"  - Accept: {should_accept} - {reason}")
+                
+            except Exception as e:
+                logger.error(f"Error evaluating patch for chunk {patch.get('chunk_id', 'N/A')}: {e}")
+                continue
+        
+        # Filter patches that meet quality thresholds
+        accepted_patches = [p for p in evaluated_patches if p['should_accept']]
+        rejected_patches = [p for p in evaluated_patches if not p['should_accept']]
+        
+        logger.info(f"✅ Accepted {len(accepted_patches)}/{len(evaluated_patches)} patches")
+        logger.info(f"❌ Rejected {len(rejected_patches)} patches")
+        
+        # Log rejection reasons
+        for rejected in rejected_patches:
+            logger.info(f"  - Chunk {rejected['patch'].get('chunk_id', 'N/A')}: {rejected['reason']}")
+        
+        if not accepted_patches:
+            fallback_msg = self.semantic_evaluator.get_fallback_message(len(chunk_patches), len(rejected_patches))
+            logger.warning(f"No acceptable patches for {file_info['path']}: {fallback_msg}")
+            return None
+        
+        # Sort accepted patches by combined score (best first)
+        accepted_patches.sort(key=lambda x: x['combined_score'], reverse=True)
+        
+        # If only one accepted patch, return it with enhancements
+        if len(accepted_patches) == 1:
+            best_patch = accepted_patches[0]
+            enhanced_patch = best_patch['patch'].copy()
+            enhanced_patch.update({
+                'semantic_evaluation': best_patch['evaluation'],
+                'selection_reason': f"Single high-quality patch: {best_patch['reason']}",
+                'rejected_alternatives': len(rejected_patches)
+            })
+            return enhanced_patch
+        
+        # Combine multiple high-quality patches
+        logger.info(f"🔗 Combining {len(accepted_patches)} high-quality patches")
+        
+        # Sort patches by line number for proper combination
+        accepted_patches.sort(key=lambda x: x['patch'].get('start_line', 0))
+        
         combined_patch_content = []
         combined_explanation = []
-        combined_confidence = sum(p.get('confidence_score', 0) for p in valid_patches) / len(valid_patches)
+        combined_justification = []
+        combined_confidence = sum(p['patch'].get('confidence_score', 0) for p in accepted_patches) / len(accepted_patches)
+        combined_relevance = sum(p['evaluation'].get('relevance_score', 0) for p in accepted_patches) / len(accepted_patches)
         
-        # Sort patches by line number
-        valid_patches.sort(key=lambda p: p.get('start_line', 0))
-        
-        for patch in valid_patches:
+        for patch_info in accepted_patches:
+            patch = patch_info['patch']
             combined_patch_content.append(patch.get('patch_content', ''))
             combined_explanation.append(f"Chunk {patch.get('chunk_id', 'N/A')}: {patch.get('explanation', '')}")
+            combined_justification.append(f"Chunk {patch.get('chunk_id', 'N/A')}: {patch.get('justification', '')}")
         
         # Reconstruct full file content with all patches applied
-        # This is a simplified version - in practice, you'd need more sophisticated merging
         patched_code = file_info['content']
-        for patch in valid_patches:
+        for patch_info in accepted_patches:
+            patch = patch_info['patch']
             if patch.get('patched_code'):
-                # Apply each chunk's changes (simplified)
                 patched_code = patch.get('patched_code')
         
         return {
             "patch_content": "\n\n".join(combined_patch_content),
             "patched_code": patched_code,
-            "test_code": valid_patches[0].get('test_code', ''),
-            "commit_message": f"Combined fix for {file_info['path']} ({len(valid_patches)} sections)",
+            "test_code": accepted_patches[0]['patch'].get('test_code', ''),
+            "commit_message": f"Intelligent multi-chunk fix for {file_info['path']} ({len(accepted_patches)} sections)",
             "confidence_score": min(combined_confidence, 0.95),
+            "relevance_score": combined_relevance,
             "explanation": "\n\n".join(combined_explanation),
+            "justification": "\n\n".join(combined_justification),
             "target_file": file_info['path'],
             "base_file_hash": file_info['hash'],
-            "patch_type": "combined_chunks",
-            "chunks_processed": len(valid_patches)
+            "patch_type": "intelligent_combined_chunks",
+            "chunks_processed": len(accepted_patches),
+            "chunks_rejected": len(rejected_patches),
+            "selection_summary": f"Selected {len(accepted_patches)} high-quality patches, rejected {len(rejected_patches)} low-quality patches",
+            "semantic_evaluation": {
+                "total_evaluated": len(evaluated_patches),
+                "accepted_count": len(accepted_patches),
+                "rejected_count": len(rejected_patches),
+                "average_relevance": combined_relevance,
+                "selection_criteria": "Confidence ≥ 0.9 AND Relevance ≥ 0.8"
+            }
         }
