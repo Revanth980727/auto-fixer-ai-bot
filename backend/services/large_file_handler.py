@@ -4,6 +4,7 @@ import logging
 from typing import Dict, Any, List, Optional, Tuple
 from services.openai_client import OpenAIClient
 from services.semantic_evaluator import SemanticEvaluator
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -15,6 +16,9 @@ class LargeFileHandler:
         self.semantic_evaluator = SemanticEvaluator()
         self.chunk_size_limit = 12000  # Reduced from 15000 for better processing
         self.context_overlap_lines = 8  # Smart overlap: 5-10 lines for better context
+        # Confidence thresholds for tiered evaluation
+        self.low_confidence_threshold = 0.3
+        self.high_confidence_threshold = 0.9
     
     def should_chunk_file(self, file_content: str) -> bool:
         """Determine if file should be processed in chunks - more aggressive"""
@@ -144,60 +148,121 @@ IMPORTANT: Generate ONLY valid JSON. If you're not confident this chunk contains
 """
     
     async def combine_chunk_patches(self, chunk_patches: List[Dict[str, Any]], file_info: Dict[str, Any], ticket) -> Optional[Dict[str, Any]]:
-        """Combine multiple chunk patches with semantic evaluation and intelligent filtering"""
+        """Combine multiple chunk patches with confidence-based tiered semantic evaluation"""
         if not chunk_patches:
             logger.warning(f"No chunk patches provided for {file_info['path']}")
             return None
         
-        logger.info(f"🧠 Starting intelligent patch combination for {file_info['path']} with {len(chunk_patches)} patches")
+        start_time = time.time()
+        logger.info(f"🧠 Starting confidence-based semantic evaluation for {file_info['path']} with {len(chunk_patches)} patches")
         
-        # Evaluate each patch for relevance
+        # Initialize processing counters
+        evaluation_stats = {
+            "total_chunks": len(chunk_patches),
+            "skipped_low_confidence": 0,
+            "fast_accepted_high_confidence": 0,
+            "evaluated_medium_confidence": 0,
+            "api_calls_saved": 0
+        }
+        
+        # Tiered evaluation with confidence-based filtering
         evaluated_patches = []
-        for patch in chunk_patches:
-            try:
-                # Create JIRA issue context for evaluation
-                jira_context = {
-                    'title': ticket.title,
-                    'description': ticket.description,
-                    'error_trace': ticket.error_trace or ''
+        jira_context = {
+            'title': ticket.title,
+            'description': ticket.description,
+            'error_trace': ticket.error_trace or ''
+        }
+        
+        for i, patch in enumerate(chunk_patches):
+            chunk_id = patch.get('chunk_id', i)
+            confidence = patch.get('confidence_score', 0.0)
+            
+            # Tier 1: Skip very low confidence chunks
+            if confidence < self.low_confidence_threshold:
+                logger.info(f"[🚫 Skipped] Chunk #{chunk_id} skipped due to low confidence: {confidence:.3f}")
+                evaluation_stats["skipped_low_confidence"] += 1
+                evaluation_stats["api_calls_saved"] += 1
+                continue
+            
+            # Tier 2: Fast accept very high confidence chunks
+            elif confidence >= self.high_confidence_threshold:
+                logger.info(f"[⚡ Fast Accept] Chunk #{chunk_id} accepted based on high confidence ({confidence:.3f})")
+                
+                # Create fast-accept evaluation without API calls
+                evaluation = {
+                    "relevance_score": 1.0,
+                    "keyword_score": 0.8,
+                    "similarity_score": 0.9,
+                    "meets_threshold": True,
+                    "evaluation_details": {
+                        "issue_keywords": [],
+                        "patch_keywords": [],
+                        "common_keywords": []
+                    }
                 }
-                
-                # Evaluate semantic relevance
-                evaluation = await self.semantic_evaluator.evaluate_patch_relevance(patch, jira_context)
-                
-                # Check if patch should be accepted
-                should_accept, reason = self.semantic_evaluator.should_accept_patch(patch, evaluation)
                 
                 patch_info = {
                     'patch': patch,
                     'evaluation': evaluation,
-                    'should_accept': should_accept,
-                    'reason': reason,
-                    'combined_score': (patch.get('confidence_score', 0) * 0.6) + (evaluation.get('relevance_score', 0) * 0.4)
+                    'should_accept': True,
+                    'reason': f"High confidence score: {confidence:.3f}",
+                    'combined_score': confidence,
+                    'processing_tier': 'fast_accept'
                 }
                 
                 evaluated_patches.append(patch_info)
-                
-                logger.info(f"📊 Chunk {patch.get('chunk_id', 'N/A')} evaluation:")
-                logger.info(f"  - Confidence: {patch.get('confidence_score', 0):.3f}")
-                logger.info(f"  - Relevance: {evaluation.get('relevance_score', 0):.3f}")
-                logger.info(f"  - Combined: {patch_info['combined_score']:.3f}")
-                logger.info(f"  - Accept: {should_accept} - {reason}")
-                
-            except Exception as e:
-                logger.error(f"Error evaluating patch for chunk {patch.get('chunk_id', 'N/A')}: {e}")
-                continue
+                evaluation_stats["fast_accepted_high_confidence"] += 1
+                evaluation_stats["api_calls_saved"] += 2  # Saved embedding API calls
+            
+            # Tier 3: Full semantic evaluation for medium confidence chunks
+            else:
+                try:
+                    logger.info(f"[🔍 Evaluating] Chunk #{chunk_id}: Confidence={confidence:.3f} - Running full semantic evaluation")
+                    
+                    # Run full semantic evaluation with embeddings
+                    evaluation = await self.semantic_evaluator.evaluate_patch_relevance(patch, jira_context)
+                    should_accept, reason = self.semantic_evaluator.should_accept_patch(patch, evaluation)
+                    
+                    relevance = evaluation.get('relevance_score', 0)
+                    logger.info(f"[🔍 Evaluated] Chunk #{chunk_id}: Confidence={confidence:.2f}, Relevance={relevance:.2f}, Reason={reason}")
+                    
+                    patch_info = {
+                        'patch': patch,
+                        'evaluation': evaluation,
+                        'should_accept': should_accept,
+                        'reason': reason,
+                        'combined_score': (confidence * 0.6) + (relevance * 0.4),
+                        'processing_tier': 'full_evaluation'
+                    }
+                    
+                    evaluated_patches.append(patch_info)
+                    evaluation_stats["evaluated_medium_confidence"] += 1
+                    
+                except Exception as e:
+                    logger.error(f"Error evaluating patch for chunk {chunk_id}: {e}")
+                    continue
         
-        # Filter patches that meet quality thresholds
+        # Log processing summary
+        processing_time = time.time() - start_time
+        logger.info(f"📊 CONFIDENCE-BASED EVALUATION SUMMARY for {file_info['path']}:")
+        logger.info(f"  - Total chunks: {evaluation_stats['total_chunks']}")
+        logger.info(f"  - 🚫 Skipped (low confidence): {evaluation_stats['skipped_low_confidence']}")
+        logger.info(f"  - ⚡ Fast accepted (high confidence): {evaluation_stats['fast_accepted_high_confidence']}")
+        logger.info(f"  - 🔍 Evaluated (medium confidence): {evaluation_stats['evaluated_medium_confidence']}")
+        logger.info(f"  - 💰 API calls saved: {evaluation_stats['api_calls_saved']}")
+        logger.info(f"  - ⏱️ Processing time: {processing_time:.2f}s")
+        
+        # Filter patches that should be accepted
         accepted_patches = [p for p in evaluated_patches if p['should_accept']]
         rejected_patches = [p for p in evaluated_patches if not p['should_accept']]
         
-        logger.info(f"✅ Accepted {len(accepted_patches)}/{len(evaluated_patches)} patches")
+        logger.info(f"✅ Accepted {len(accepted_patches)}/{len(evaluated_patches)} evaluated patches")
         logger.info(f"❌ Rejected {len(rejected_patches)} patches")
         
         # Log rejection reasons
         for rejected in rejected_patches:
-            logger.info(f"  - Chunk {rejected['patch'].get('chunk_id', 'N/A')}: {rejected['reason']}")
+            tier = rejected.get('processing_tier', 'unknown')
+            logger.info(f"  - Chunk {rejected['patch'].get('chunk_id', 'N/A')} ({tier}): {rejected['reason']}")
         
         if not accepted_patches:
             fallback_msg = self.semantic_evaluator.get_fallback_message(len(chunk_patches), len(rejected_patches))
@@ -214,7 +279,9 @@ IMPORTANT: Generate ONLY valid JSON. If you're not confident this chunk contains
             enhanced_patch.update({
                 'semantic_evaluation': best_patch['evaluation'],
                 'selection_reason': f"Single high-quality patch: {best_patch['reason']}",
-                'rejected_alternatives': len(rejected_patches)
+                'rejected_alternatives': len(rejected_patches),
+                'processing_tier': best_patch.get('processing_tier', 'unknown'),
+                'evaluation_stats': evaluation_stats
             })
             return enhanced_patch
         
@@ -232,9 +299,10 @@ IMPORTANT: Generate ONLY valid JSON. If you're not confident this chunk contains
         
         for patch_info in accepted_patches:
             patch = patch_info['patch']
+            tier = patch_info.get('processing_tier', 'unknown')
             combined_patch_content.append(patch.get('patch_content', ''))
-            combined_explanation.append(f"Chunk {patch.get('chunk_id', 'N/A')}: {patch.get('explanation', '')}")
-            combined_justification.append(f"Chunk {patch.get('chunk_id', 'N/A')}: {patch.get('justification', '')}")
+            combined_explanation.append(f"Chunk {patch.get('chunk_id', 'N/A')} ({tier}): {patch.get('explanation', '')}")
+            combined_justification.append(f"Chunk {patch.get('chunk_id', 'N/A')} ({tier}): {patch.get('justification', '')}")
         
         # Reconstruct full file content with all patches applied
         patched_code = file_info['content']
@@ -247,22 +315,27 @@ IMPORTANT: Generate ONLY valid JSON. If you're not confident this chunk contains
             "patch_content": "\n\n".join(combined_patch_content),
             "patched_code": patched_code,
             "test_code": accepted_patches[0]['patch'].get('test_code', ''),
-            "commit_message": f"Intelligent multi-chunk fix for {file_info['path']} ({len(accepted_patches)} sections)",
+            "commit_message": f"Confidence-based multi-chunk fix for {file_info['path']} ({len(accepted_patches)} sections)",
             "confidence_score": min(combined_confidence, 0.95),
             "relevance_score": combined_relevance,
             "explanation": "\n\n".join(combined_explanation),
             "justification": "\n\n".join(combined_justification),
             "target_file": file_info['path'],
             "base_file_hash": file_info['hash'],
-            "patch_type": "intelligent_combined_chunks",
+            "patch_type": "confidence_tiered_chunks",
             "chunks_processed": len(accepted_patches),
             "chunks_rejected": len(rejected_patches),
-            "selection_summary": f"Selected {len(accepted_patches)} high-quality patches, rejected {len(rejected_patches)} low-quality patches",
+            "selection_summary": f"Tiered evaluation: {evaluation_stats['fast_accepted_high_confidence']} fast-accepted, {evaluation_stats['evaluated_medium_confidence']} evaluated, {evaluation_stats['skipped_low_confidence']} skipped",
             "semantic_evaluation": {
                 "total_evaluated": len(evaluated_patches),
                 "accepted_count": len(accepted_patches),
                 "rejected_count": len(rejected_patches),
                 "average_relevance": combined_relevance,
-                "selection_criteria": "Confidence ≥ 0.9 AND Relevance ≥ 0.8"
+                "selection_criteria": f"Tiered: Skip <{self.low_confidence_threshold}, Fast ≥{self.high_confidence_threshold}, Evaluate middle range"
+            },
+            "performance_optimization": {
+                "api_calls_saved": evaluation_stats["api_calls_saved"],
+                "processing_time_seconds": processing_time,
+                "efficiency_gain": f"{(evaluation_stats['api_calls_saved'] / evaluation_stats['total_chunks'] * 100):.1f}% API calls saved"
             }
         }
