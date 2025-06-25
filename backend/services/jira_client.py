@@ -28,35 +28,95 @@ class JIRAClient:
             }
     
     async def fetch_new_tickets(self) -> List[Dict[str, Any]]:
-        """Fetch new bug tickets from JIRA using configured parameters"""
+        """Fetch tickets from JIRA with pagination support"""
         if not self.base_url or not self.api_token:
             logger.warning("JIRA credentials not configured")
             return []
         
         try:
             jql = config.get_jira_jql()
-            logger.info(f"Using JQL query: {jql}")
+            logger.info(f"🔍 JIRA FETCH - Using JQL query: {jql}")
+            logger.info(f"🔍 JIRA FETCH - Configured statuses: {config.jira_statuses}")
+            logger.info(f"🔍 JIRA FETCH - Max results per page: {config.jira_max_results}")
+            logger.info(f"🔍 JIRA FETCH - Safety limit total: {config.jira_max_total_results}")
             
-            response = requests.get(
-                f"{self.base_url}/rest/api/3/search",
-                headers=self.headers,
-                params={
-                    "jql": jql,
-                    "fields": "summary,description,priority,created,key,issuetype",
-                    "maxResults": config.jira_max_results
-                }
-            )
+            all_issues = []
+            start_at = 0
+            total_fetched = 0
+            page_count = 0
             
-            if response.status_code == 200:
+            while True:
+                page_count += 1
+                logger.info(f"📄 JIRA FETCH - Page {page_count}: Fetching from startAt={start_at}")
+                
+                response = requests.get(
+                    f"{self.base_url}/rest/api/3/search",
+                    headers=self.headers,
+                    params={
+                        "jql": jql,
+                        "fields": "summary,description,priority,created,key,issuetype,status",
+                        "maxResults": config.jira_max_results,
+                        "startAt": start_at
+                    }
+                )
+                
+                if response.status_code != 200:
+                    logger.error(f"❌ JIRA API error: {response.status_code} - {response.text}")
+                    break
+                
                 data = response.json()
-                logger.info(f"Found {len(data.get('issues', []))} issues")
-                return data.get("issues", [])
-            else:
-                logger.error(f"JIRA API error: {response.status_code} - {response.text}")
-                return []
+                issues = data.get("issues", [])
+                total_available = data.get("total", 0)
+                
+                logger.info(f"📄 JIRA FETCH - Page {page_count} results:")
+                logger.info(f"   - Issues in this page: {len(issues)}")
+                logger.info(f"   - Total available in JIRA: {total_available}")
+                logger.info(f"   - Fetched so far: {total_fetched}")
+                
+                if not issues:
+                    logger.info("📄 JIRA FETCH - No more issues to fetch")
+                    break
+                
+                # Log status breakdown for this page
+                status_counts = {}
+                for issue in issues:
+                    status = issue.get("fields", {}).get("status", {}).get("name", "Unknown")
+                    status_counts[status] = status_counts.get(status, 0) + 1
+                
+                logger.info(f"📊 JIRA FETCH - Page {page_count} status breakdown: {status_counts}")
+                
+                all_issues.extend(issues)
+                total_fetched += len(issues)
+                
+                # Check if we've fetched all available issues
+                if total_fetched >= total_available:
+                    logger.info(f"✅ JIRA FETCH - Fetched all {total_fetched} available issues")
+                    break
+                
+                # Safety limit check
+                if total_fetched >= config.jira_max_total_results:
+                    logger.warning(f"⚠️ JIRA FETCH - Hit safety limit of {config.jira_max_total_results} issues")
+                    break
+                
+                # Prepare for next page
+                start_at += config.jira_max_results
+            
+            # Final summary
+            final_status_counts = {}
+            for issue in all_issues:
+                status = issue.get("fields", {}).get("status", {}).get("name", "Unknown")
+                final_status_counts[status] = final_status_counts.get(status, 0) + 1
+            
+            logger.info(f"🎯 JIRA FETCH COMPLETE:")
+            logger.info(f"   - Total pages fetched: {page_count}")
+            logger.info(f"   - Total issues fetched: {len(all_issues)}")
+            logger.info(f"   - Final status breakdown: {final_status_counts}")
+            
+            return all_issues
                 
         except Exception as e:
-            logger.error(f"Error fetching JIRA tickets: {e}")
+            logger.error(f"❌ Error fetching JIRA tickets: {e}")
+            logger.exception("Full error traceback:")
             return []
     
     async def update_ticket_status(self, jira_id: str, status: str, comment: str = ""):
@@ -142,13 +202,20 @@ class JIRAClient:
         if priority_field and isinstance(priority_field, dict):
             priority = priority_field.get("name", "medium").lower()
         
-        return {
+        # Extract current status for logging
+        status = fields.get("status", {}).get("name", "Unknown")
+        
+        ticket_data = {
             "jira_id": jira_issue.get("key"),
             "title": fields.get("summary", ""),
             "description": description,
             "priority": priority,
             "error_trace": self._extract_error_trace(description)
         }
+        
+        logger.debug(f"🎫 Formatted ticket {ticket_data['jira_id']} - Status: {status}, Priority: {priority}")
+        
+        return ticket_data
     
     def _extract_description_text(self, description: Dict) -> str:
         """Extract plain text from Atlassian Document Format"""

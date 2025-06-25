@@ -41,11 +41,24 @@ class Config:
         logger.info(f"Config loaded - GITHUB_REPO_NAME: {self.github_repo_name or 'Not set'}")
         logger.info(f"Config loaded - GITHUB_TARGET_BRANCH: {self.github_target_branch}")
         
-        # JIRA Configuration - Fixed to only get "To Do" tickets with no time limit
+        # JIRA Configuration - Enhanced to support multiple statuses
         self.jira_issue_types = self._parse_list(os.getenv("JIRA_ISSUE_TYPES", "Bug,Task,Story"))
-        self.jira_statuses = ["To Do"]  # Fixed to only "To Do" status
+        
+        # Enhanced JIRA status configuration - now supports multiple statuses
+        default_statuses = "To Do,Selected for Development,In Progress,Backlog"
+        self.jira_statuses = self._parse_list(os.getenv("JIRA_STATUSES", default_statuses))
+        
         self.jira_max_results = int(os.getenv("JIRA_MAX_RESULTS", "50"))
+        self.jira_max_total_results = int(os.getenv("JIRA_MAX_TOTAL_RESULTS", "500"))  # Safety limit for pagination
         self.jira_priority_field = os.getenv("JIRA_PRIORITY_FIELD", "priority")
+        
+        # Force reprocessing flag for testing/debugging
+        self.jira_force_reprocess = os.getenv("JIRA_FORCE_REPROCESS", "false").lower() == "true"
+        
+        logger.info(f"Config loaded - JIRA_STATUSES: {self.jira_statuses}")
+        logger.info(f"Config loaded - JIRA_MAX_RESULTS: {self.jira_max_results}")
+        logger.info(f"Config loaded - JIRA_MAX_TOTAL_RESULTS: {self.jira_max_total_results}")
+        logger.info(f"Config loaded - JIRA_FORCE_REPROCESS: {self.jira_force_reprocess}")
         
         # Agent Configuration
         self.agent_max_retries = int(os.getenv("AGENT_MAX_RETRIES", "3"))
@@ -109,19 +122,18 @@ class Config:
             logger.warning(f"⚠️ Configuration Warning: {warning}")
     
     def get_jira_jql(self) -> str:
-        """Generate JQL query for JIRA ticket polling - no time limit, only To Do status"""
+        """Generate JQL query for JIRA ticket polling - supports multiple statuses"""
         issue_types = "','".join(self.jira_issue_types)
+        statuses = "','".join(self.jira_statuses)
         
         jql = f"""
         project = '{self.jira_project_key}' 
         AND issueType IN ('{issue_types}') 
-        AND status = 'To Do'
+        AND status IN ('{statuses}')
         ORDER BY priority DESC, created DESC
         """
         
         return " ".join(jql.split())
-    
-    # ... keep existing code (validation methods and other functionality)
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary for API responses"""
@@ -143,6 +155,11 @@ class Config:
             "complexity_settings": {
                 "description_threshold": self.complexity_description_threshold,
                 "default": self.complexity_default
+            },
+            "jira_pagination": {
+                "max_results": self.jira_max_results,
+                "max_total_results": self.jira_max_total_results,
+                "force_reprocess": self.jira_force_reprocess
             }
         }
 

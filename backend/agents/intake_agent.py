@@ -5,6 +5,7 @@ from core.database import get_sync_db
 from core.config import config
 from services.jira_client import JIRAClient
 from typing import Dict, Any
+from datetime import datetime
 import logging
 
 logger = logging.getLogger(__name__)
@@ -47,33 +48,76 @@ class IntakeAgent(BaseAgent):
     
     async def poll_and_create_tickets(self):
         """Poll JIRA for new tickets and create them in our system"""
-        logger.info("Polling JIRA for new tickets")
+        logger.info("🚀 INTAKE AGENT - Starting ticket polling")
         
         try:
             jira_issues = await self.jira_client.fetch_new_tickets()
-            logger.info(f"Found {len(jira_issues)} issues from JIRA")
+            logger.info(f"📥 INTAKE AGENT - Found {len(jira_issues)} issues from JIRA")
+            
+            if not jira_issues:
+                logger.info("📭 INTAKE AGENT - No issues found in JIRA")
+                return
             
             created_count = 0
-            for issue in jira_issues:
-                ticket_data = self.jira_client.format_ticket_data(issue)
-                
-                # Check if ticket already exists
-                with next(get_sync_db()) as db:
+            updated_count = 0
+            skipped_count = 0
+            
+            with next(get_sync_db()) as db:
+                for issue in jira_issues:
+                    ticket_data = self.jira_client.format_ticket_data(issue)
+                    jira_id = ticket_data["jira_id"]
+                    
+                    # Check if ticket already exists
                     existing = db.query(Ticket).filter(
-                        Ticket.jira_id == ticket_data["jira_id"]
+                        Ticket.jira_id == jira_id
                     ).first()
                     
-                    if not existing:
+                    if existing:
+                        if config.jira_force_reprocess:
+                            # Update existing ticket if force reprocess is enabled
+                            logger.info(f"🔄 INTAKE AGENT - Force reprocessing existing ticket: {jira_id}")
+                            existing.title = ticket_data["title"]
+                            existing.description = ticket_data["description"]
+                            existing.priority = ticket_data["priority"]
+                            existing.error_trace = ticket_data["error_trace"]
+                            existing.updated_at = datetime.utcnow()
+                            existing.status = TicketStatus.TODO  # Reset status for reprocessing
+                            db.add(existing)
+                            updated_count += 1
+                        else:
+                            logger.debug(f"⏭️ INTAKE AGENT - Skipping existing ticket: {jira_id}")
+                            skipped_count += 1
+                    else:
+                        # Create new ticket
+                        logger.info(f"✨ INTAKE AGENT - Creating new ticket: {jira_id}")
+                        logger.debug(f"   Title: {ticket_data['title'][:50]}...")
+                        logger.debug(f"   Priority: {ticket_data['priority']}")
+                        logger.debug(f"   Description length: {len(ticket_data['description'])} chars")
+                        logger.debug(f"   Error trace present: {'Yes' if ticket_data['error_trace'] else 'No'}")
+                        
                         ticket = Ticket(**ticket_data)
                         db.add(ticket)
-                        db.commit()
                         created_count += 1
-                        logger.info(f"Created new ticket: {ticket.jira_id}")
+                
+                # Commit all changes
+                if created_count > 0 or updated_count > 0:
+                    db.commit()
+                    logger.info("💾 INTAKE AGENT - Database changes committed")
             
-            logger.info(f"Created {created_count} new tickets from JIRA polling")
+            # Final summary
+            logger.info(f"📊 INTAKE AGENT - Polling complete:")
+            logger.info(f"   ✨ Created: {created_count} new tickets")
+            logger.info(f"   🔄 Updated: {updated_count} tickets (force reprocess)")
+            logger.info(f"   ⏭️ Skipped: {skipped_count} existing tickets")
+            logger.info(f"   📋 Total processed: {len(jira_issues)} JIRA issues")
+            
+            if created_count == 0 and updated_count == 0 and len(jira_issues) > 0:
+                logger.info("💡 INTAKE AGENT - Tip: All JIRA issues already exist in database")
+                logger.info(f"   To reprocess existing tickets, set JIRA_FORCE_REPROCESS=true")
                         
         except Exception as e:
-            logger.error(f"Error in ticket polling: {e}")
+            logger.error(f"❌ INTAKE AGENT - Error in ticket polling: {e}")
+            logger.exception("Full error traceback:")
     
     def _calculate_priority_score(self, ticket: Ticket) -> float:
         """Calculate priority score based on configured weights"""
