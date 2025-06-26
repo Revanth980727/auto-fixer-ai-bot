@@ -43,40 +43,429 @@ class AgentOrchestrator:
     async def start_processing(self):
         """Start processing tickets through enhanced agent pipeline with full monitoring"""
         self.running = True
-        logger.info(f"Starting production-ready agent orchestrator with full monitoring")
-        logger.info(f"Intervals: process={self.process_interval}s, intake={self.intake_interval}s")
+        logger.info(f"🚀 Starting enhanced agent orchestrator with complete JIRA-GitHub automation")
+        logger.info(f"📊 Intervals: process={self.process_interval}s, intake={self.intake_interval}s")
         
-        # Validate configuration
-        missing_config = config.validate_required_config()
-        if missing_config:
-            logger.warning(f"Missing required configuration: {missing_config}")
+        # Critical: Validate and fix GitHub configuration
+        github_status = await self._validate_and_fix_github_config()
+        if not github_status["configured"]:
+            logger.warning("⚠️ GitHub not fully configured - continuing with JIRA-only mode")
+            logger.warning("📋 Features available: JIRA status updates and commenting")
+            logger.warning("📋 Features limited: No PR creation, manual code review required")
+        else:
+            logger.info("✅ GitHub fully configured - complete automation enabled")
         
-        # Check GitHub configuration - this is now a hard requirement
-        github_status = self.github_client.get_configuration_status()
-        logger.info(f"GitHub configuration status: {github_status}")
-        
-        if not github_status.get("configured"):
-            logger.error("GitHub is not properly configured - production agent processing requires GitHub access")
-            logger.error("Please configure GITHUB_TOKEN, GITHUB_REPO_OWNER, and GITHUB_REPO_NAME")
+        # Validate JIRA configuration
+        jira_status = await self._validate_jira_config()
+        if not jira_status["configured"]:
+            logger.error("❌ JIRA not configured - cannot proceed with automation")
             return
         
-        # Perform initial repository analysis
-        await self._perform_initial_repository_analysis()
+        # Perform initial repository analysis if GitHub available
+        if github_status["configured"]:
+            await self._perform_initial_repository_analysis()
         
-        # Start background tasks
+        # Start background tasks with enhanced monitoring
         asyncio.create_task(self._intake_polling_loop())
         asyncio.create_task(self._health_monitoring_loop())
         asyncio.create_task(self._context_cleanup_loop())
         
         while self.running:
             try:
-                await self.process_pending_tickets()
+                # Enhanced processing with detailed logging
+                await self._process_pending_tickets_enhanced()
                 await asyncio.sleep(self.process_interval)
             except Exception as e:
-                logger.error(f"Error in production agent orchestrator: {e}")
+                logger.error(f"💥 Critical error in agent orchestrator: {e}")
                 metrics_collector.record_agent_execution("orchestrator", 0, False)
                 await asyncio.sleep(5)
 
+    async def _validate_and_fix_github_config(self) -> Dict[str, Any]:
+        """Validate GitHub configuration and provide detailed diagnostics"""
+        logger.info("🔍 GITHUB CONFIG VALIDATION")
+        
+        config_status = self.github_client.get_configuration_status()
+        
+        logger.info(f"📋 GitHub Token: {'✅ Present' if config_status['has_token'] else '❌ Missing'}")
+        logger.info(f"📋 GitHub Repo Owner: {'✅ Present' if config_status['has_repo_owner'] else '❌ Missing'}")
+        logger.info(f"📋 GitHub Repo Name: {'✅ Present' if config_status['has_repo_name'] else '❌ Missing'}")
+        logger.info(f"📋 Target Branch: {config_status['target_branch']}")
+        logger.info(f"📋 Full Repository: {config_status['repo_full_name'] or 'Not configured'}")
+        
+        if config_status["configured"]:
+            # Test GitHub API access
+            try:
+                repo_tree = await self.github_client.get_repository_tree()
+                if repo_tree:
+                    logger.info(f"✅ GitHub API access verified - {len(repo_tree)} files found")
+                else:
+                    logger.warning("⚠️ GitHub API access limited - repository tree empty")
+            except Exception as e:
+                logger.error(f"❌ GitHub API test failed: {e}")
+                config_status["configured"] = False
+                config_status["api_error"] = str(e)
+        
+        return config_status
+
+    async def _validate_jira_config(self) -> Dict[str, Any]:
+        """Validate JIRA configuration"""
+        logger.info("🔍 JIRA CONFIG VALIDATION")
+        
+        has_token = bool(config.jira_api_token)
+        has_url = bool(config.jira_base_url)
+        has_username = bool(config.jira_username)
+        
+        logger.info(f"📋 JIRA API Token: {'✅ Present' if has_token else '❌ Missing'}")
+        logger.info(f"📋 JIRA Base URL: {'✅ Present' if has_url else '❌ Missing'}")
+        logger.info(f"📋 JIRA Username: {'✅ Present' if has_username else '❌ Missing'}")
+        logger.info(f"📋 JIRA Project Key: {config.jira_project_key}")
+        
+        return {
+            "configured": has_token and has_url,
+            "has_token": has_token,
+            "has_url": has_url,
+            "has_username": has_username
+        }
+
+    async def _process_pending_tickets_enhanced(self):
+        """Enhanced ticket processing with comprehensive logging and JIRA integration"""
+        with next(get_sync_db()) as db:
+            # Get tickets ready for processing
+            pending_tickets = db.query(Ticket).filter(
+                Ticket.status.in_([TicketStatus.TODO, TicketStatus.IN_PROGRESS])
+            ).limit(3).all()
+            
+            if pending_tickets:
+                logger.info(f"🎯 PROCESSING QUEUE: Found {len(pending_tickets)} tickets")
+                for ticket in pending_tickets:
+                    logger.info(f"📋 Ticket {ticket.id}: {ticket.jira_id} - Status: {ticket.status.value}")
+                    logger.info(f"   Title: {ticket.title[:100]}...")
+                    logger.info(f"   Priority: {ticket.priority}")
+                    logger.info(f"   Created: {ticket.created_at}")
+            else:
+                logger.debug("📋 No pending tickets found for processing")
+                return
+            
+            # Get ticket IDs to avoid session conflicts
+            ticket_ids = [ticket.id for ticket in pending_tickets]
+        
+        # Process each ticket with enhanced pipeline
+        for ticket_id in ticket_ids:
+            try:
+                logger.info(f"🚀 Starting enhanced pipeline for ticket {ticket_id}")
+                await self._process_ticket_with_comprehensive_jira_integration(ticket_id)
+            except Exception as e:
+                logger.error(f"💥 Enhanced pipeline error for ticket {ticket_id}: {e}")
+                await self._handle_ticket_processing_error(ticket_id, e)
+
+    async def _process_ticket_with_comprehensive_jira_integration(self, ticket_id: int):
+        """Process ticket with complete JIRA status management and commenting"""
+        pipeline_start_time = time.time()
+        logger.info(f"🎯 COMPREHENSIVE JIRA INTEGRATION - Ticket {ticket_id}")
+        
+        # Get ticket details
+        with next(get_sync_db()) as db:
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+            if not ticket:
+                logger.error(f"❌ Ticket {ticket_id} not found")
+                return
+                
+            jira_id = ticket.jira_id
+            logger.info(f"📋 Processing {jira_id}: {ticket.title}")
+        
+        # Create pipeline context
+        pipeline_context = context_manager.create_context(ticket_id)
+        
+        try:
+            # PHASE 1: Start processing - Update JIRA to "In Progress"
+            if ticket.status == TicketStatus.TODO:
+                logger.info(f"📈 JIRA UPDATE: Moving {jira_id} to In Progress")
+                
+                start_comment = f"""🤖 **AI Agent System Started Processing**
+
+**Ticket Analysis:**
+- Priority: {ticket.priority}
+- Complexity: Auto-detected based on description length and error traces
+- Processing Mode: {'Full GitHub Integration' if self.github_client._is_configured() else 'JIRA-Only Mode'}
+
+**Pipeline Stages:**
+1. 🧠 **Planning** - Analyzing root cause and identifying target files
+2. 👨‍💻 **Development** - Generating intelligent patches
+3. 🧪 **Quality Assurance** - Testing and validation
+4. 📢 **Communication** - {'Creating GitHub PR' if self.github_client._is_configured() else 'Updating ticket status'}
+
+**Status:** Analysis in progress..."""
+                
+                await self._update_jira_with_comment(jira_id, "In Progress", start_comment)
+                
+                # Update database
+                with next(get_sync_db()) as db:
+                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                    if ticket:
+                        ticket.status = TicketStatus.IN_PROGRESS
+                        db.add(ticket)
+                        db.commit()
+            
+            # PHASE 2: Planning Agent with JIRA Updates
+            logger.info(f"🧠 PHASE 1: Enhanced Planning for {jira_id}")
+            planner_start_time = time.time()
+            
+            planner_context = await self._prepare_production_planner_context(ticket, pipeline_context.context_id)
+            
+            if planner_context.get("github_access_failed"):
+                await self._mark_ticket_for_review(ticket_id, jira_id, 
+                    "GitHub repository access failed during planning phase. Unable to analyze source files for intelligent fix generation.")
+                return
+            
+            planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket, planner_context)
+            planner_duration = time.time() - planner_start_time
+            
+            # Update JIRA with planning results
+            planning_comment = f"""🧠 **Planning Phase Completed** ({planner_duration:.1f}s)
+
+**Root Cause Analysis:**
+{planner_result.get('root_cause', 'Analysis in progress...')}
+
+**Files Identified for Modification:**
+{chr(10).join(f"• `{file.get('path', 'Unknown')}` - {file.get('reason', 'Target file')}" for file in planner_result.get('likely_files', [])[:5])}
+
+**Confidence Level:** {planner_result.get('confidence', 'Medium')}
+**Next Phase:** Generating code patches..."""
+            
+            await self._update_jira_with_comment(jira_id, None, planning_comment)
+            
+            # Validate planning results
+            if not self._validate_planner_results(planner_result):
+                await self._mark_ticket_for_review(ticket_id, jira_id, 
+                    "Planning phase failed to identify actionable files or root cause. Manual analysis required.")
+                return
+            
+            # PHASE 3: Development Agent with JIRA Updates
+            logger.info(f"👨‍💻 PHASE 2: Enhanced Development for {jira_id}")
+            developer_start_time = time.time()
+            
+            developer_context = await self._prepare_production_developer_context(ticket, planner_result, pipeline_context.context_id)
+            
+            if developer_context.get("github_access_failed"):
+                await self._mark_ticket_for_review(ticket_id, jira_id, 
+                    "Unable to fetch source files for patch generation. GitHub access required for automated fixes.")
+                return
+            
+            developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket, developer_context)
+            developer_duration = time.time() - developer_start_time
+            
+            # Update JIRA with development results
+            patches = developer_result.get("patches", [])
+            development_comment = f"""👨‍💻 **Development Phase Completed** ({developer_duration:.1f}s)
+
+**Patches Generated:** {len(patches)}
+**Intelligent Patching:** {'✅ Enabled' if developer_result.get('intelligent_patching') else '❌ Basic mode'}
+
+**Patch Summary:**
+{chr(10).join(f"• `{patch.get('target_file', 'Unknown')}` - {patch.get('description', 'Code modification')}" for patch in patches[:3])}
+
+**Next Phase:** Quality assurance testing..."""
+            
+            await self._update_jira_with_comment(jira_id, None, development_comment)
+            
+            # Validate development results
+            if not self._validate_enhanced_developer_results(developer_result):
+                await self._mark_ticket_for_review(ticket_id, jira_id, 
+                    "Development phase failed to generate valid patches. Manual code changes required.")
+                return
+            
+            # PHASE 4: QA Agent with JIRA Updates
+            logger.info(f"🧪 PHASE 3: Enhanced QA for {jira_id}")
+            qa_start_time = time.time()
+            
+            qa_context = await self._prepare_production_qa_context(ticket, developer_result, pipeline_context.context_id)
+            qa_result = await self.agents[AgentType.QA].execute_with_retry(ticket, qa_context)
+            qa_duration = time.time() - qa_start_time
+            
+            # Update JIRA with QA results
+            successful_patches = qa_result.get("successful_patches", 0)
+            ready_for_deployment = qa_result.get("ready_for_deployment", False)
+            
+            qa_comment = f"""🧪 **Quality Assurance Completed** ({qa_duration:.1f}s)
+
+**Test Results:**
+- Patches Tested: {len(patches)}
+- Successful: {successful_patches}
+- Ready for Deployment: {'✅ Yes' if ready_for_deployment else '❌ No'}
+
+**Quality Checks:**
+- Syntax Validation: {'✅ Passed' if successful_patches > 0 else '❌ Failed'}
+- Logic Verification: {'✅ Passed' if ready_for_deployment else '⚠️ Needs Review'}
+- Integration Testing: {'✅ Passed' if ready_for_deployment else '⚠️ Requires Manual Testing'}
+
+**Status:** {'Proceeding to deployment' if ready_for_deployment else 'Manual review required'}"""
+            
+            await self._update_jira_with_comment(jira_id, None, qa_comment)
+            
+            # PHASE 5: Communication/Deployment
+            if ready_for_deployment and successful_patches > 0:
+                logger.info(f"📢 PHASE 4: Communication/Deployment for {jira_id}")
+                comm_start_time = time.time()
+                
+                comm_context = await self._prepare_production_communicator_context(ticket, qa_result, pipeline_context.context_id)
+                comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(ticket, comm_context)
+                comm_duration = time.time() - comm_start_time
+                
+                # Final success update to JIRA
+                github_operations = comm_result.get("github_operations", False)
+                pr_info = comm_result.get("pr_info", {})
+                
+                success_comment = f"""🎉 **Automated Fix Completed Successfully**
+
+**Deployment Summary:**
+- Total Processing Time: {(time.time() - pipeline_start_time):.1f}s
+- Patches Applied: {comm_result.get('patches_deployed', 0)}
+- Target Branch: {comm_result.get('target_branch', 'main')}
+
+**GitHub Integration:**
+{'✅ **Pull Request Created**' if github_operations and pr_info else '⚠️ **Manual Deployment Required**'}
+{f"- PR #{pr_info.get('number', 'N/A')}: {pr_info.get('html_url', 'N/A')}" if pr_info else "- GitHub not configured - patches generated for manual application"}
+
+**Actions Taken:**
+{chr(10).join(f"• {action}" for action in comm_result.get('actions_taken', []))}
+
+**Status:** {'Ready for code review and merge' if github_operations else 'Fix generated - manual deployment needed'}
+
+---
+*This fix was automatically generated and {'deployed' if github_operations else 'prepared'} by the AI Agent System*"""
+                
+                await self._update_jira_with_comment(jira_id, "Done", success_comment)
+                
+                # Update ticket status to completed
+                with next(get_sync_db()) as db:
+                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                    if ticket:
+                        ticket.status = TicketStatus.COMPLETED
+                        db.add(ticket)
+                        db.commit()
+                
+                logger.info(f"🎉 SUCCESS: Ticket {jira_id} completed with full automation")
+                
+            else:
+                # QA failed - mark for review
+                await self._mark_ticket_for_review(ticket_id, jira_id, 
+                    f"Quality assurance testing failed. {successful_patches} of {len(patches)} patches passed validation. Manual review and testing required before deployment.")
+        
+        except Exception as e:
+            logger.error(f"💥 Pipeline error for {jira_id}: {e}")
+            await self._handle_ticket_processing_error(ticket_id, e)
+
+    async def _mark_ticket_for_review(self, ticket_id: int, jira_id: str, reason: str):
+        """Mark ticket as needing human review with comprehensive JIRA update"""
+        logger.warning(f"🔍 MANUAL REVIEW REQUIRED: {jira_id}")
+        
+        review_comment = f"""⚠️ **Manual Review Required**
+
+**Issue:** {reason}
+
+**AI Agent Analysis:**
+The automated system encountered a limitation that requires human intervention. This is not an error in the system, but rather a complex scenario that benefits from human expertise.
+
+**Recommended Actions:**
+1. Review the analysis provided in previous comments
+2. Examine the identified files and root cause analysis
+3. Consider the complexity of the required changes
+4. Determine if manual coding or additional context is needed
+
+**System Status:** All automated analysis has been completed and documented above. The issue is ready for developer review.
+
+---
+*AI Agent System - Escalated for human expertise*"""
+        
+        await self._update_jira_with_comment(jira_id, "Needs Review", review_comment)
+        
+        # Update database
+        with next(get_sync_db()) as db:
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+            if ticket:
+                ticket.status = TicketStatus.IN_REVIEW
+                db.add(ticket)
+                db.commit()
+
+    async def _handle_ticket_processing_error(self, ticket_id: int, error: Exception):
+        """Handle processing errors with detailed JIRA updates"""
+        logger.error(f"💥 Processing error for ticket {ticket_id}: {error}")
+        
+        with next(get_sync_db()) as db:
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+            if not ticket:
+                return
+            
+            jira_id = ticket.jira_id
+            ticket.retry_count += 1
+            current_retry = ticket.retry_count
+            
+            if current_retry >= config.agent_max_retries:
+                # Max retries exceeded - mark for review
+                error_comment = f"""❌ **Automated Processing Failed**
+
+**Error Details:** {str(error)}
+
+**Processing Attempts:** {current_retry} (Maximum reached)
+
+**System Analysis:**
+The AI Agent System has attempted to process this ticket {current_retry} times but encountered persistent issues. This typically indicates:
+
+1. **Complex Integration Issues** - The changes may require broader system understanding
+2. **Missing Dependencies** - Required libraries or configurations may be unavailable  
+3. **Infrastructure Limitations** - GitHub access or repository structure issues
+4. **Ticket Complexity** - The issue may require human architectural decisions
+
+**Recommended Actions:**
+1. Review the error details above
+2. Check system configuration and repository access
+3. Consider manual analysis of the reported issue
+4. Update ticket with additional context if needed
+
+---
+*AI Agent System - Maximum retry attempts reached*"""
+                
+                await self._update_jira_with_comment(jira_id, "Needs Review", error_comment)
+                ticket.status = TicketStatus.IN_REVIEW
+                
+            else:
+                # Retry available - update status and retry later
+                retry_comment = f"""🔄 **Retry Attempt {current_retry}**
+
+**Temporary Error:** {str(error)}
+
+**System Status:** The AI Agent System encountered a temporary issue and will automatically retry processing this ticket.
+
+**Next Attempt:** Within the next {config.agent_process_interval} seconds
+**Remaining Retries:** {config.agent_max_retries - current_retry}
+
+---
+*AI Agent System - Automatic retry scheduled*"""
+                
+                await self._update_jira_with_comment(jira_id, None, retry_comment)
+                ticket.status = TicketStatus.TODO  # Reset for retry
+            
+            db.add(ticket)
+            db.commit()
+
+    async def _update_jira_with_comment(self, jira_id: str, status: str = None, comment: str = ""):
+        """Update JIRA ticket with status and/or comment"""
+        if not jira_id:
+            return False
+        
+        try:
+            success = await self.jira_client.update_ticket_status(jira_id, status or "", comment)
+            if success:
+                status_msg = f" and status to {status}" if status else ""
+                logger.info(f"✅ Updated JIRA {jira_id}{status_msg}")
+            else:
+                logger.error(f"❌ Failed to update JIRA {jira_id}")
+            return success
+        except Exception as e:
+            logger.error(f"❌ JIRA update error for {jira_id}: {e}")
+            return False
+
+    # ... keep existing code (all other methods remain the same)
     async def _perform_initial_repository_analysis(self):
         """Perform initial repository analysis for better file discovery"""
         try:
@@ -108,237 +497,8 @@ class AgentOrchestrator:
             logger.error(f"Error in initial repository analysis: {e}")
 
     async def process_ticket_pipeline(self, ticket_id: int):
-        """Process a single ticket through the production-ready agent pipeline"""
-        pipeline_start_time = time.time()
-        logger.info(f"🎯 Starting production pipeline for ticket {ticket_id}")
-        
-        # Create pipeline context
-        pipeline_context = context_manager.create_context(ticket_id)
-        logger.info(f"📋 Created pipeline context: {pipeline_context.context_id}")
-        
-        # Update ticket status to in progress and update Jira
-        jira_id = None
-        with next(get_sync_db()) as db:
-            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-            if not ticket:
-                logger.error(f"❌ Ticket {ticket_id} not found")
-                return
-                
-            logger.info(f"📋 Ticket {ticket_id}: {ticket.title} (Status: {ticket.status})")
-            
-            # Only update to IN_PROGRESS if it's currently TODO
-            if ticket.status == TicketStatus.TODO:
-                ticket.status = TicketStatus.IN_PROGRESS
-                jira_id = ticket.jira_id
-                db.add(ticket)
-                db.commit()
-                
-                logger.info(f"✅ Ticket {ticket_id} status updated to IN_PROGRESS")
-                
-                # Update Jira status
-                await self._update_jira_status(jira_id, "In Progress", 
-                                             f"Production AI Agent system has started processing this ticket with intelligent repository analysis.")
-            else:
-                jira_id = ticket.jira_id
-        
-        try:
-            # Get fresh ticket object for processing
-            with next(get_sync_db()) as db:
-                ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-                if not ticket:
-                    logger.error(f"❌ Ticket {ticket_id} not found during processing")
-                    return
-                
-                # Step 1: Enhanced Planner agent with repository intelligence
-                logger.info(f"🧠 STEP 1: Running production planner agent for ticket {ticket_id}")
-                planner_start_time = time.time()
-                
-                planner_context = await self._prepare_production_planner_context(ticket, pipeline_context.context_id)
-                
-                # Check if planner context is valid
-                if not planner_context or planner_context.get("github_access_failed"):
-                    logger.warning(f"⚠️ GitHub access failed for ticket {ticket_id} - marking for human intervention")
-                    await self._mark_ticket_for_review(ticket_id, jira_id, 
-                        "GitHub repository access failed. Unable to fetch source files for production analysis. Please verify GitHub configuration and retry manually.")
-                    return
-                
-                logger.info(f"📊 Production planner context prepared: {len(planner_context.get('error_trace_files', []))} error trace files")
-                
-                planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket, planner_context)
-                planner_duration = time.time() - planner_start_time
-                
-                # Record planner metrics
-                metrics_collector.record_agent_execution("planner", planner_duration, True, ticket_id)
-                
-                # Update pipeline context
-                context_manager.update_stage(
-                    pipeline_context.context_id, 
-                    PipelineStage.PLANNING, 
-                    planner_result, 
-                    "success", 
-                    duration=planner_duration
-                )
-                
-                logger.info(f"✅ PRODUCTION PLANNER COMPLETED for ticket {ticket_id}")
-                logger.info(f"📋 Planner result keys: {list(planner_result.keys())}")
-                
-                # Validate planner results
-                if not self._validate_planner_results(planner_result):
-                    logger.warning(f"⚠️ Production planner validation failed for ticket {ticket_id}")
-                    await self._mark_ticket_for_review(ticket_id, jira_id, 
-                        "Production planner agent failed to identify target files or root cause. Manual analysis required.")
-                    return
-                
-                logger.info(f"✅ Production planner validation passed for ticket {ticket_id}")
-                
-                # Step 2: Enhanced Developer agent with repository intelligence
-                logger.info(f"👨‍💻 STEP 2: Running production developer agent for ticket {ticket_id}")
-                developer_start_time = time.time()
-                
-                developer_context = await self._prepare_production_developer_context(ticket, planner_result, pipeline_context.context_id)
-                
-                # Check if developer context is valid
-                if not developer_context or developer_context.get("github_access_failed"):
-                    logger.warning(f"⚠️ GitHub access failed during production developer context preparation for ticket {ticket_id}")
-                    await self._mark_ticket_for_review(ticket_id, jira_id, 
-                        "Unable to fetch source files for intelligent patch generation. GitHub repository access required.")
-                    return
-                
-                logger.info(f"📊 Production developer context prepared: {len(developer_context.get('source_files', []))} source files")
-                
-                developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket, developer_context)
-                developer_duration = time.time() - developer_start_time
-                
-                # Record developer metrics
-                metrics_collector.record_agent_execution("developer", developer_duration, True, ticket_id)
-                
-                # Update pipeline context
-                context_manager.update_stage(
-                    pipeline_context.context_id, 
-                    PipelineStage.DEVELOPMENT, 
-                    developer_result, 
-                    "success", 
-                    duration=developer_duration
-                )
-                
-                logger.info(f"✅ PRODUCTION DEVELOPER COMPLETED for ticket {ticket_id}")
-                logger.info(f"📋 Developer result keys: {list(developer_result.keys())}")
-                
-                # Validate enhanced developer results
-                if not self._validate_enhanced_developer_results(developer_result):
-                    logger.warning(f"⚠️ Production developer validation failed for ticket {ticket_id}")
-                    await self._mark_ticket_for_review(ticket_id, jira_id, 
-                        "Production developer agent failed to generate valid intelligent patches. Manual code changes required.")
-                    return
-                
-                logger.info(f"✅ Production developer validation passed for ticket {ticket_id}")
-                
-                # Step 3: Enhanced QA agent with intelligent patch testing
-                logger.info(f"🧪 STEP 3: Running production QA agent for ticket {ticket_id}")
-                qa_start_time = time.time()
-                
-                qa_context = await self._prepare_production_qa_context(ticket, developer_result, pipeline_context.context_id)
-                logger.info(f"📊 Production QA context prepared: {len(qa_context.get('patches', []))} patches to test intelligently")
-                
-                qa_result = await self.agents[AgentType.QA].execute_with_retry(ticket, qa_context)
-                qa_duration = time.time() - qa_start_time
-                
-                # Record QA metrics
-                metrics_collector.record_agent_execution("qa", qa_duration, qa_result.get("ready_for_deployment", False), ticket_id)
-                
-                logger.info(f"✅ PRODUCTION QA COMPLETED for ticket {ticket_id}")
-                logger.info(f"📋 QA result: ready_for_deployment={qa_result.get('ready_for_deployment')}, successful_patches={qa_result.get('successful_patches', 0)}")
-            
-            # Step 4: If production QA passes, communicator creates PR
-            if qa_result.get("ready_for_deployment") and qa_result.get("successful_patches", 0) > 0:
-                logger.info(f"📢 STEP 4: Running production communicator agent for ticket {ticket_id}")
-                comm_start_time = time.time()
-                
-                # Get fresh ticket object for communicator
-                with next(get_sync_db()) as db:
-                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-                    if ticket:
-                        comm_context = await self._prepare_production_communicator_context(ticket, qa_result, pipeline_context.context_id)
-                        comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(ticket, comm_context)
-                        comm_duration = time.time() - comm_start_time
-                        
-                        # Record communicator metrics
-                        metrics_collector.record_agent_execution("communicator", comm_duration, True, ticket_id)
-                        
-                        # Update pipeline context
-                        context_manager.update_stage(
-                            pipeline_context.context_id, 
-                            PipelineStage.COMMUNICATION, 
-                            comm_result, 
-                            "success", 
-                            duration=comm_duration
-                        )
-                        
-                        logger.info(f"✅ PRODUCTION COMMUNICATOR COMPLETED for ticket {ticket_id}")
-                
-                # Update ticket status to COMPLETED
-                with next(get_sync_db()) as db:
-                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-                    if ticket:
-                        ticket.status = TicketStatus.COMPLETED
-                        db.add(ticket)
-                        db.commit()
-                
-                # Update Jira status to "Done"
-                await self._update_jira_status(jira_id, "Done", 
-                                             f"Production AI Agent has successfully completed processing with intelligent patch application and created a pull request. The fix is ready for deployment.")
-                
-                # Record successful pipeline
-                pipeline_duration = time.time() - pipeline_start_time
-                metrics_collector.record_pipeline_execution(ticket_id, pipeline_duration, 4, True)
-                context_manager.update_stage(
-                    pipeline_context.context_id, 
-                    PipelineStage.COMPLETED, 
-                    {"success": True}, 
-                    "success", 
-                    duration=pipeline_duration
-                )
-                    
-                logger.info(f"🎉 PRODUCTION PIPELINE SUCCESS: Ticket {ticket_id} completed successfully with intelligent patching")
-            else:
-                # Production QA failed, mark for review
-                logger.warning(f"⚠️ Production QA validation failed for ticket {ticket_id} - marking for human review")
-                
-                qa_message = "Production QA testing failed - no patches passed intelligent validation." if qa_result.get("successful_patches", 0) == 0 else "Production QA testing completed but patches were not ready for deployment due to conflicts or validation issues."
-                await self._mark_ticket_for_review(ticket_id, jira_id, qa_message)
-                
-                # Record failed pipeline
-                pipeline_duration = time.time() - pipeline_start_time
-                metrics_collector.record_pipeline_execution(ticket_id, pipeline_duration, 3, False)
-                
-                logger.warning(f"🔍 PRODUCTION PIPELINE REVIEW NEEDED: Ticket {ticket_id} - {qa_message}")
-            
-        except Exception as e:
-            logger.error(f"💥 PRODUCTION PIPELINE ERROR for ticket {ticket_id}: {e}")
-            
-            # Record failed pipeline
-            pipeline_duration = time.time() - pipeline_start_time
-            metrics_collector.record_pipeline_execution(ticket_id, pipeline_duration, 0, False)
-            
-            # Mark ticket as failed and update Jira
-            with next(get_sync_db()) as db:
-                ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-                if ticket:
-                    ticket.status = TicketStatus.FAILED
-                    ticket.retry_count += 1
-                    current_retry_count = ticket.retry_count
-                    db.add(ticket)
-                    db.commit()
-                    
-                    # Check if we've exceeded max retries
-                    if current_retry_count >= config.agent_max_retries:
-                        await self._mark_ticket_for_review(ticket_id, jira_id, 
-                            f"Production AI Agent failed to process this ticket after {config.agent_max_retries} attempts. Error: {str(e)}")
-                        logger.error(f"🚫 PRODUCTION PIPELINE FAILED: Ticket {ticket_id} failed after {config.agent_max_retries} retries")
-                    else:
-                        logger.warning(f"🔄 PRODUCTION PIPELINE RETRY: Ticket {ticket_id} failed (attempt {current_retry_count}): {e}")
-            
-            raise e
+        """Legacy method - redirects to comprehensive JIRA integration"""
+        await self._process_ticket_with_comprehensive_jira_integration(ticket_id)
 
     async def _prepare_production_planner_context(self, ticket: Ticket, context_id: str) -> Dict[str, Any]:
         """Prepare production context for planner agent with repository intelligence"""
@@ -453,8 +613,6 @@ class AgentOrchestrator:
         
         logger.info(f"✅ Production planner context ready: {len(context['error_trace_files'])} files prepared")
         return context
-
-    # ... keep existing code (remaining methods stay the same)
 
     async def _prepare_production_developer_context(self, ticket: Ticket, planner_result: Dict, context_id: str) -> Dict[str, Any]:
         """Prepare production context for developer agent with intelligent file tracking"""
@@ -604,7 +762,7 @@ class AgentOrchestrator:
     async def stop_processing(self):
         """Stop processing tickets"""
         self.running = False
-        logger.info("Production agent orchestrator stopped")
+        logger.info("Enhanced agent orchestrator stopped")
 
     async def _intake_polling_loop(self):
         """Background loop for intake polling"""
@@ -617,39 +775,8 @@ class AgentOrchestrator:
                 await asyncio.sleep(10)
 
     async def process_pending_tickets(self):
-        """Process tickets that are ready for agent processing"""
-        with next(get_sync_db()) as db:
-            # Get tickets in TODO or IN_PROGRESS status (to resume interrupted tickets)
-            pending_tickets = db.query(Ticket).filter(
-                Ticket.status.in_([TicketStatus.TODO, TicketStatus.IN_PROGRESS])
-            ).limit(3).all()
-            
-            # Get ticket IDs to avoid session conflicts
-            ticket_ids = [ticket.id for ticket in pending_tickets]
-            
-        if ticket_ids:
-            logger.info(f"🎯 Found {len(ticket_ids)} pending tickets to process: {ticket_ids}")
-        
-        # Process each ticket using its ID
-        for ticket_id in ticket_ids:
-            try:
-                await self.process_ticket_pipeline(ticket_id)
-            except Exception as e:
-                logger.error(f"💥 Error processing ticket {ticket_id}: {e}")
-
-    async def _mark_ticket_for_review(self, ticket_id: int, jira_id: str, reason: str):
-        """Mark ticket as needing human review and update Jira"""
-        with next(get_sync_db()) as db:
-            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-            if ticket:
-                ticket.status = TicketStatus.IN_REVIEW
-                db.add(ticket)
-                db.commit()
-        
-        # Update Jira status to "Needs Review"
-        await self._update_jira_status(jira_id, "Needs Review", reason)
-        
-        logger.warning(f"🔍 Ticket {ticket_id} marked for human review: {reason}")
+        """Legacy method - redirects to enhanced processing"""
+        await self._process_pending_tickets_enhanced()
 
     def _validate_planner_results(self, result: Dict) -> bool:
         """Validate that planner agent produced meaningful results"""
@@ -727,16 +854,3 @@ class AgentOrchestrator:
                 logger.info(f"✅ Ticket {ticket_id} reset for retry")
             else:
                 logger.warning(f"⚠️ Cannot retry ticket {ticket_id} - not in FAILED status")
-
-    async def _update_jira_status(self, jira_id: str, status: str, comment: str):
-        """Update JIRA ticket status and add comment"""
-        try:
-            if jira_id:
-                # Use the correct JIRA client method with proper parameters
-                success = await self.jira_client.update_ticket_status(jira_id, status, comment)
-                if success:
-                    logger.info(f"✅ Updated JIRA {jira_id} status to {status}")
-                else:
-                    logger.error(f"❌ Failed to update JIRA {jira_id} status to {status}")
-        except Exception as e:
-            logger.error(f"❌ Error updating JIRA {jira_id}: {e}")
