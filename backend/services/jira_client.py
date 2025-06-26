@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from core.models import Ticket, TicketStatus
 from core.config import config
 import logging
+import json
 
 logger = logging.getLogger(__name__)
 
@@ -13,6 +14,11 @@ class JIRAClient:
         self.api_token = config.jira_api_token
         self.username = config.jira_username
         
+        logger.info("🔧 JIRA CLIENT INIT DEBUG:")
+        logger.info(f"   - Base URL: {self.base_url}")
+        logger.info(f"   - Username: {self.username}")
+        logger.info(f"   - API Token Length: {len(self.api_token) if self.api_token else 0}")
+        
         # Use basic auth if username provided, otherwise bearer token
         if self.username:
             import base64
@@ -21,24 +27,31 @@ class JIRAClient:
                 "Authorization": f"Basic {auth_string}",
                 "Content-Type": "application/json"
             }
+            logger.info("   - Auth Method: Basic Auth")
         else:
             self.headers = {
                 "Authorization": f"Bearer {self.api_token}",
                 "Content-Type": "application/json"
             }
+            logger.info("   - Auth Method: Bearer Token")
     
     async def fetch_new_tickets(self) -> List[Dict[str, Any]]:
-        """Fetch tickets from JIRA with pagination support"""
+        """Fetch tickets from JIRA with enhanced debugging and pagination support"""
         if not self.base_url or not self.api_token:
-            logger.warning("JIRA credentials not configured")
+            logger.error("❌ JIRA FETCH - Missing credentials")
+            logger.error(f"   - Base URL: {'✅' if self.base_url else '❌'}")
+            logger.error(f"   - API Token: {'✅' if self.api_token else '❌'}")
             return []
         
         try:
             jql = config.get_jira_jql()
-            logger.info(f"🔍 JIRA FETCH - Using JQL query: {jql}")
-            logger.info(f"🔍 JIRA FETCH - Configured statuses: {config.jira_statuses}")
-            logger.info(f"🔍 JIRA FETCH - Max results per page: {config.jira_max_results}")
-            logger.info(f"🔍 JIRA FETCH - Safety limit total: {config.jira_max_total_results}")
+            logger.info("🔍 JIRA FETCH DEBUG - Configuration:")
+            logger.info(f"   - JQL Query: {jql}")
+            logger.info(f"   - Configured Statuses: {config.jira_statuses}")
+            logger.info(f"   - Issue Types: {config.jira_issue_types}")
+            logger.info(f"   - Max Results Per Page: {config.jira_max_results}")
+            logger.info(f"   - Safety Limit Total: {config.jira_max_total_results}")
+            logger.info(f"   - Force Reprocess: {config.jira_force_reprocess}")
             
             all_issues = []
             start_at = 0
@@ -47,31 +60,60 @@ class JIRAClient:
             
             while True:
                 page_count += 1
-                logger.info(f"📄 JIRA FETCH - Page {page_count}: Fetching from startAt={start_at}")
+                logger.info(f"📄 JIRA FETCH - Page {page_count}: Starting from {start_at}")
+                
+                # Prepare request parameters
+                request_params = {
+                    "jql": jql,
+                    "fields": "summary,description,priority,created,key,issuetype,status",
+                    "maxResults": config.jira_max_results,
+                    "startAt": start_at
+                }
+                
+                logger.debug(f"🔍 JIRA API REQUEST DEBUG:")
+                logger.debug(f"   - URL: {self.base_url}/rest/api/3/search")
+                logger.debug(f"   - Params: {json.dumps(request_params, indent=2)}")
+                logger.debug(f"   - Headers: {json.dumps({k: v[:50] + '...' if len(str(v)) > 50 else v for k, v in self.headers.items()}, indent=2)}")
                 
                 response = requests.get(
                     f"{self.base_url}/rest/api/3/search",
                     headers=self.headers,
-                    params={
-                        "jql": jql,
-                        "fields": "summary,description,priority,created,key,issuetype,status",
-                        "maxResults": config.jira_max_results,
-                        "startAt": start_at
-                    }
+                    params=request_params
                 )
                 
+                logger.debug(f"🔍 JIRA API RESPONSE DEBUG:")
+                logger.debug(f"   - Status Code: {response.status_code}")
+                logger.debug(f"   - Response Headers: {dict(response.headers)}")
+                
                 if response.status_code != 200:
-                    logger.error(f"❌ JIRA API error: {response.status_code} - {response.text}")
+                    logger.error(f"❌ JIRA API ERROR:")
+                    logger.error(f"   - Status Code: {response.status_code}")
+                    logger.error(f"   - Response Text: {response.text}")
+                    logger.error(f"   - Request URL: {response.url}")
                     break
                 
                 data = response.json()
                 issues = data.get("issues", [])
                 total_available = data.get("total", 0)
                 
-                logger.info(f"📄 JIRA FETCH - Page {page_count} results:")
+                logger.info(f"📄 JIRA FETCH - Page {page_count} Results:")
                 logger.info(f"   - Issues in this page: {len(issues)}")
                 logger.info(f"   - Total available in JIRA: {total_available}")
                 logger.info(f"   - Fetched so far: {total_fetched}")
+                
+                # Log detailed issue information
+                if issues:
+                    logger.debug(f"🎫 DETAILED ISSUE INFO - Page {page_count}:")
+                    for idx, issue in enumerate(issues):
+                        fields = issue.get("fields", {})
+                        status = fields.get("status", {}).get("name", "Unknown")
+                        priority = fields.get("priority", {}).get("name", "Unknown")
+                        issue_type = fields.get("issuetype", {}).get("name", "Unknown")
+                        summary = fields.get("summary", "No Summary")[:50]
+                        
+                        logger.debug(f"   - Issue {idx + 1}: {issue.get('key', 'No Key')}")
+                        logger.debug(f"     Status: {status}, Priority: {priority}, Type: {issue_type}")
+                        logger.debug(f"     Summary: {summary}...")
                 
                 if not issues:
                     logger.info("📄 JIRA FETCH - No more issues to fetch")
@@ -79,11 +121,23 @@ class JIRAClient:
                 
                 # Log status breakdown for this page
                 status_counts = {}
-                for issue in issues:
-                    status = issue.get("fields", {}).get("status", {}).get("name", "Unknown")
-                    status_counts[status] = status_counts.get(status, 0) + 1
+                priority_counts = {}
+                type_counts = {}
                 
-                logger.info(f"📊 JIRA FETCH - Page {page_count} status breakdown: {status_counts}")
+                for issue in issues:
+                    fields = issue.get("fields", {})
+                    status = fields.get("status", {}).get("name", "Unknown")
+                    priority = fields.get("priority", {}).get("name", "Unknown")
+                    issue_type = fields.get("issuetype", {}).get("name", "Unknown")
+                    
+                    status_counts[status] = status_counts.get(status, 0) + 1
+                    priority_counts[priority] = priority_counts.get(priority, 0) + 1
+                    type_counts[issue_type] = type_counts.get(issue_type, 0) + 1
+                
+                logger.info(f"📊 JIRA FETCH - Page {page_count} Breakdown:")
+                logger.info(f"   - Status Counts: {status_counts}")
+                logger.info(f"   - Priority Counts: {priority_counts}")
+                logger.info(f"   - Type Counts: {type_counts}")
                 
                 all_issues.extend(issues)
                 total_fetched += len(issues)
@@ -101,24 +155,36 @@ class JIRAClient:
                 # Prepare for next page
                 start_at += config.jira_max_results
             
-            # Final summary
+            # Final comprehensive summary
             final_status_counts = {}
-            for issue in all_issues:
-                status = issue.get("fields", {}).get("status", {}).get("name", "Unknown")
-                final_status_counts[status] = final_status_counts.get(status, 0) + 1
+            final_priority_counts = {}
+            final_type_counts = {}
             
-            logger.info(f"🎯 JIRA FETCH COMPLETE:")
-            logger.info(f"   - Total pages fetched: {page_count}")
-            logger.info(f"   - Total issues fetched: {len(all_issues)}")
-            logger.info(f"   - Final status breakdown: {final_status_counts}")
+            for issue in all_issues:
+                fields = issue.get("fields", {})
+                status = fields.get("status", {}).get("name", "Unknown")
+                priority = fields.get("priority", {}).get("name", "Unknown")
+                issue_type = fields.get("issuetype", {}).get("name", "Unknown")
+                
+                final_status_counts[status] = final_status_counts.get(status, 0) + 1
+                final_priority_counts[priority] = final_priority_counts.get(priority, 0) + 1
+                final_type_counts[issue_type] = final_type_counts.get(issue_type, 0) + 1
+            
+            logger.info("🎯 JIRA FETCH COMPLETE - FINAL SUMMARY:")
+            logger.info(f"   - Total Pages Fetched: {page_count}")
+            logger.info(f"   - Total Issues Fetched: {len(all_issues)}")
+            logger.info(f"   - Final Status Breakdown: {final_status_counts}")
+            logger.info(f"   - Final Priority Breakdown: {final_priority_counts}")
+            logger.info(f"   - Final Type Breakdown: {final_type_counts}")
             
             return all_issues
                 
         except Exception as e:
-            logger.error(f"❌ Error fetching JIRA tickets: {e}")
+            logger.error(f"❌ CRITICAL ERROR in JIRA fetch: {e}")
             logger.exception("Full error traceback:")
             return []
     
+    # ... keep existing code (update_ticket_status method)
     async def update_ticket_status(self, jira_id: str, status: str, comment: str = ""):
         """Update ticket status in JIRA"""
         if not self.base_url or not self.api_token:
@@ -190,7 +256,7 @@ class JIRAClient:
             return False
     
     def format_ticket_data(self, jira_issue: Dict) -> Dict[str, Any]:
-        """Format JIRA issue data for our system using configured field mappings"""
+        """Format JIRA issue data for our system with enhanced debugging"""
         fields = jira_issue.get("fields", {})
         
         # Extract description text from Atlassian Document Format
@@ -204,6 +270,7 @@ class JIRAClient:
         
         # Extract current status for logging
         status = fields.get("status", {}).get("name", "Unknown")
+        issue_type = fields.get("issuetype", {}).get("name", "Unknown")
         
         ticket_data = {
             "jira_id": jira_issue.get("key"),
@@ -213,10 +280,18 @@ class JIRAClient:
             "error_trace": self._extract_error_trace(description)
         }
         
-        logger.debug(f"🎫 Formatted ticket {ticket_data['jira_id']} - Status: {status}, Priority: {priority}")
+        logger.debug(f"🎫 FORMATTED TICKET DEBUG:")
+        logger.debug(f"   - JIRA ID: {ticket_data['jira_id']}")
+        logger.debug(f"   - Status: {status}")
+        logger.debug(f"   - Priority: {priority}")
+        logger.debug(f"   - Type: {issue_type}")
+        logger.debug(f"   - Title Length: {len(ticket_data['title'])}")
+        logger.debug(f"   - Description Length: {len(description)}")
+        logger.debug(f"   - Error Trace Present: {'Yes' if ticket_data['error_trace'] else 'No'}")
         
         return ticket_data
     
+    # ... keep existing code (_extract_description_text and _extract_error_trace methods)
     def _extract_description_text(self, description: Dict) -> str:
         """Extract plain text from Atlassian Document Format"""
         if not description or not isinstance(description, dict):

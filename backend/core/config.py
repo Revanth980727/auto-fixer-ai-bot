@@ -27,38 +27,56 @@ class Config:
         self.github_repo_name = os.getenv("GITHUB_REPO_NAME")
         self.github_target_branch = os.getenv("GITHUB_TARGET_BRANCH", "main")
         
-        # Debug logging for critical values
-        logger.info(f"Config loaded - JIRA_BASE_URL: {self.jira_base_url}")
-        logger.info(f"Config loaded - JIRA_PROJECT_KEY: {self.jira_project_key}")
-        logger.info(f"Config loaded - JIRA_USERNAME: {self.jira_username}")
-        logger.info(f"Config loaded - JIRA_API_TOKEN present: {'Yes' if self.jira_api_token else 'No'}")
+        # Enhanced Debug logging for critical values
+        logger.info("🔧 CONFIGURATION DEBUG - API Keys & Tokens:")
+        logger.info(f"   - OpenAI API Key: {'✅ Present' if self.openai_api_key else '❌ Missing'}")
+        logger.info(f"   - JIRA API Token: {'✅ Present' if self.jira_api_token else '❌ Missing'}")
         if self.jira_api_token:
-            logger.info(f"Config loaded - JIRA_API_TOKEN length: {len(self.jira_api_token)}")
+            logger.info(f"   - JIRA API Token Length: {len(self.jira_api_token)} chars")
+        logger.info(f"   - GitHub Token: {'✅ Present' if self.github_token else '❌ Missing'}")
         
-        # GitHub Configuration logging
-        logger.info(f"Config loaded - GITHUB_TOKEN present: {'Yes' if self.github_token else 'No'}")
-        logger.info(f"Config loaded - GITHUB_REPO_OWNER: {self.github_repo_owner or 'Not set'}")
-        logger.info(f"Config loaded - GITHUB_REPO_NAME: {self.github_repo_name or 'Not set'}")
-        logger.info(f"Config loaded - GITHUB_TARGET_BRANCH: {self.github_target_branch}")
+        logger.info("🔧 CONFIGURATION DEBUG - JIRA Settings:")
+        logger.info(f"   - JIRA Base URL: {self.jira_base_url or '❌ Not set'}")
+        logger.info(f"   - JIRA Project Key: {self.jira_project_key}")
+        logger.info(f"   - JIRA Username: {self.jira_username or '❌ Not set'}")
         
-        # JIRA Configuration - Enhanced to support multiple statuses
-        self.jira_issue_types = self._parse_list(os.getenv("JIRA_ISSUE_TYPES", "Bug,Task,Story"))
+        logger.info("🔧 CONFIGURATION DEBUG - GitHub Settings:")
+        logger.info(f"   - GitHub Repo Owner: {self.github_repo_owner or '❌ Not set'}")
+        logger.info(f"   - GitHub Repo Name: {self.github_repo_name or '❌ Not set'}")
+        logger.info(f"   - GitHub Target Branch: {self.github_target_branch}")
         
-        # Enhanced JIRA status configuration - now supports multiple statuses
-        default_statuses = "To Do,Selected for Development,In Progress,Backlog"
-        self.jira_statuses = self._parse_list(os.getenv("JIRA_STATUSES", default_statuses))
+        # Enhanced JIRA Configuration with detailed logging
+        raw_issue_types = os.getenv("JIRA_ISSUE_TYPES", "Bug,Task,Story")
+        raw_statuses = os.getenv("JIRA_STATUSES", "To Do,Selected for Development,In Progress,Backlog")
         
+        logger.info("🔧 CONFIGURATION DEBUG - Raw Environment Variables:")
+        logger.info(f"   - Raw JIRA_ISSUE_TYPES: '{raw_issue_types}'")
+        logger.info(f"   - Raw JIRA_STATUSES: '{raw_statuses}'")
+        
+        self.jira_issue_types = self._parse_list(raw_issue_types)
+        self.jira_statuses = self._parse_list(raw_statuses)
+        
+        logger.info("🔧 CONFIGURATION DEBUG - Parsed Lists:")
+        logger.info(f"   - Parsed Issue Types: {self.jira_issue_types}")
+        logger.info(f"   - Parsed Statuses: {self.jira_statuses}")
+        logger.info(f"   - Issue Types Count: {len(self.jira_issue_types)}")
+        logger.info(f"   - Statuses Count: {len(self.jira_statuses)}")
+        
+        # JIRA Pagination and Processing Settings
         self.jira_max_results = int(os.getenv("JIRA_MAX_RESULTS", "50"))
-        self.jira_max_total_results = int(os.getenv("JIRA_MAX_TOTAL_RESULTS", "500"))  # Safety limit for pagination
+        self.jira_max_total_results = int(os.getenv("JIRA_MAX_TOTAL_RESULTS", "500"))
         self.jira_priority_field = os.getenv("JIRA_PRIORITY_FIELD", "priority")
         
-        # Force reprocessing flag for testing/debugging
-        self.jira_force_reprocess = os.getenv("JIRA_FORCE_REPROCESS", "false").lower() == "true"
+        # Force reprocessing flag with detailed logging
+        raw_force_reprocess = os.getenv("JIRA_FORCE_REPROCESS", "false")
+        self.jira_force_reprocess = raw_force_reprocess.lower() == "true"
         
-        logger.info(f"Config loaded - JIRA_STATUSES: {self.jira_statuses}")
-        logger.info(f"Config loaded - JIRA_MAX_RESULTS: {self.jira_max_results}")
-        logger.info(f"Config loaded - JIRA_MAX_TOTAL_RESULTS: {self.jira_max_total_results}")
-        logger.info(f"Config loaded - JIRA_FORCE_REPROCESS: {self.jira_force_reprocess}")
+        logger.info("🔧 CONFIGURATION DEBUG - JIRA Processing Settings:")
+        logger.info(f"   - Max Results Per Page: {self.jira_max_results}")
+        logger.info(f"   - Max Total Results: {self.jira_max_total_results}")
+        logger.info(f"   - Priority Field: {self.jira_priority_field}")
+        logger.info(f"   - Raw Force Reprocess: '{raw_force_reprocess}'")
+        logger.info(f"   - Parsed Force Reprocess: {self.jira_force_reprocess}")
         
         # Agent Configuration
         self.agent_max_retries = int(os.getenv("AGENT_MAX_RETRIES", "3"))
@@ -66,7 +84,11 @@ class Config:
         self.agent_intake_interval = int(os.getenv("AGENT_INTAKE_INTERVAL", "60"))
         self.agent_poll_interval = int(os.getenv("AGENT_POLL_INTERVAL", "60"))
         
-        logger.info(f"Config loaded - AGENT_POLL_INTERVAL: {self.agent_poll_interval}")
+        logger.info("🔧 CONFIGURATION DEBUG - Agent Settings:")
+        logger.info(f"   - Max Retries: {self.agent_max_retries}")
+        logger.info(f"   - Process Interval: {self.agent_process_interval}s")
+        logger.info(f"   - Intake Interval: {self.agent_intake_interval}s")
+        logger.info(f"   - Poll Interval: {self.agent_poll_interval}s")
         
         # File Selection Configuration
         self.max_source_files = int(os.getenv("MAX_SOURCE_FILES", "5"))
@@ -90,41 +112,71 @@ class Config:
         self.test_data_config_file = os.getenv("TEST_DATA_CONFIG_FILE", "test_data.json")
         
         # Urgent keywords for priority calculation
-        self.urgent_keywords = self._parse_list(os.getenv("URGENT_KEYWORDS", "crash,critical,urgent,blocking,outage,down"))
+        raw_urgent_keywords = os.getenv("URGENT_KEYWORDS", "crash,critical,urgent,blocking,outage,down")
+        self.urgent_keywords = self._parse_list(raw_urgent_keywords)
         
-        # Log the generated JQL for debugging
+        logger.info("🔧 CONFIGURATION DEBUG - Processing Settings:")
+        logger.info(f"   - Priority Weights: {self.priority_weights}")
+        logger.info(f"   - Urgent Keywords: {self.urgent_keywords}")
+        logger.info(f"   - Complexity Threshold: {self.complexity_description_threshold}")
+        
+        # Generate and log the JQL for debugging
         jql = self.get_jira_jql()
-        logger.info(f"Generated JQL query: {jql}")
+        logger.info("🔧 CONFIGURATION DEBUG - Generated JQL:")
+        logger.info(f"   - JQL Query: {jql}")
+        logger.info(f"   - JQL Length: {len(jql)} characters")
         
         # Validate and warn about missing configurations
         self._validate_and_warn_configuration()
     
     def _parse_list(self, value: str) -> List[str]:
-        """Parse comma-separated environment variable into list"""
+        """Parse comma-separated environment variable into list with debug logging"""
         if not value:
+            logger.warning(f"🔧 PARSE_LIST - Empty value provided")
             return []
-        return [item.strip() for item in value.split(',') if item.strip()]
+        
+        parsed = [item.strip() for item in value.split(',') if item.strip()]
+        logger.debug(f"🔧 PARSE_LIST - Input: '{value}' -> Output: {parsed}")
+        return parsed
     
     def _validate_and_warn_configuration(self):
         """Validate configuration and warn about missing required settings"""
         warnings = []
+        critical_missing = []
         
         if not self.openai_api_key:
-            warnings.append("OpenAI API key not configured - AI agents will not function")
+            critical_missing.append("OpenAI API key")
         
         if not self.jira_api_token or not self.jira_base_url:
-            warnings.append("JIRA configuration incomplete - ticket polling will not work")
+            critical_missing.append("JIRA configuration (API token or base URL)")
         
         if not self.github_token or not self.github_repo_owner or not self.github_repo_name:
             warnings.append("GitHub configuration incomplete - code analysis and patch application will not work")
         
-        for warning in warnings:
-            logger.warning(f"⚠️ Configuration Warning: {warning}")
+        # Log validation results
+        if critical_missing:
+            logger.error("❌ CRITICAL CONFIGURATION MISSING:")
+            for missing in critical_missing:
+                logger.error(f"   - {missing}")
+        
+        if warnings:
+            logger.warning("⚠️ CONFIGURATION WARNINGS:")
+            for warning in warnings:
+                logger.warning(f"   - {warning}")
+        
+        if not critical_missing and not warnings:
+            logger.info("✅ CONFIGURATION VALIDATION - All critical settings present")
     
     def get_jira_jql(self) -> str:
-        """Generate JQL query for JIRA ticket polling - supports multiple statuses"""
+        """Generate JQL query for JIRA ticket polling with enhanced debugging"""
         issue_types = "','".join(self.jira_issue_types)
         statuses = "','".join(self.jira_statuses)
+        
+        logger.debug("🔧 JQL CONSTRUCTION DEBUG:")
+        logger.debug(f"   - Issue Types List: {self.jira_issue_types}")
+        logger.debug(f"   - Statuses List: {self.jira_statuses}")
+        logger.debug(f"   - Issue Types String: '{issue_types}'")
+        logger.debug(f"   - Statuses String: '{statuses}'")
         
         jql = f"""
         project = '{self.jira_project_key}' 
@@ -133,8 +185,12 @@ class Config:
         ORDER BY priority DESC, created DESC
         """
         
-        return " ".join(jql.split())
+        cleaned_jql = " ".join(jql.split())
+        logger.debug(f"   - Final JQL: {cleaned_jql}")
+        
+        return cleaned_jql
     
+    # ... keep existing code (to_dict method and other methods)
     def to_dict(self) -> Dict[str, Any]:
         """Convert configuration to dictionary for API responses"""
         return {
