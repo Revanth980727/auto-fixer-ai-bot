@@ -1,4 +1,3 @@
-
 import asyncio
 from typing import Dict, Any, List
 from core.models import Ticket, TicketStatus, AgentType
@@ -130,15 +129,15 @@ class AgentOrchestrator:
     async def _process_pending_tickets_enhanced(self):
         """Enhanced ticket processing with comprehensive logging and JIRA integration"""
         with next(get_sync_db()) as db:
-            # Get tickets ready for processing
+            # Get tickets ready for processing - fix enum comparison
             pending_tickets = db.query(Ticket).filter(
-                Ticket.status.in_([TicketStatus.TODO, TicketStatus.IN_PROGRESS])
+                Ticket.status.in_([TicketStatus.TODO.value, TicketStatus.IN_PROGRESS.value])
             ).limit(3).all()
             
             if pending_tickets:
                 logger.info(f"🎯 PROCESSING QUEUE: Found {len(pending_tickets)} tickets")
                 for ticket in pending_tickets:
-                    logger.info(f"📋 Ticket {ticket.id}: {ticket.jira_id} - Status: {ticket.status.value}")
+                    logger.info(f"📋 Ticket {ticket.id}: {ticket.jira_id} - Status: {ticket.status}")
                     logger.info(f"   Title: {ticket.title[:100]}...")
                     logger.info(f"   Priority: {ticket.priority}")
                     logger.info(f"   Created: {ticket.created_at}")
@@ -178,7 +177,8 @@ class AgentOrchestrator:
         
         try:
             # PHASE 1: Start processing - Update JIRA to "In Progress"
-            if ticket.status == TicketStatus.TODO:
+            # Fix enum comparison - check both enum and string values
+            if ticket.status == TicketStatus.TODO.value or ticket.status == TicketStatus.TODO:
                 logger.info(f"📈 JIRA UPDATE: Moving {jira_id} to In Progress")
                 
                 start_comment = f"""🤖 **AI Agent System Started Processing**
@@ -198,11 +198,11 @@ class AgentOrchestrator:
                 
                 await self._update_jira_with_comment(jira_id, "In Progress", start_comment)
                 
-                # Update database
+                # Update database - store as string value
                 with next(get_sync_db()) as db:
                     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
                     if ticket:
-                        ticket.status = TicketStatus.IN_PROGRESS
+                        ticket.status = TicketStatus.IN_PROGRESS.value
                         db.add(ticket)
                         db.commit()
             
@@ -340,7 +340,7 @@ class AgentOrchestrator:
                 with next(get_sync_db()) as db:
                     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
                     if ticket:
-                        ticket.status = TicketStatus.COMPLETED
+                        ticket.status = TicketStatus.COMPLETED.value
                         db.add(ticket)
                         db.commit()
                 
@@ -379,11 +379,11 @@ The automated system encountered a limitation that requires human intervention. 
         
         await self._update_jira_with_comment(jira_id, "Needs Review", review_comment)
         
-        # Update database
+        # Update database - store as string value
         with next(get_sync_db()) as db:
             ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
             if ticket:
-                ticket.status = TicketStatus.IN_REVIEW
+                ticket.status = TicketStatus.IN_REVIEW.value
                 db.add(ticket)
                 db.commit()
 
@@ -426,7 +426,7 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
 *AI Agent System - Maximum retry attempts reached*"""
                 
                 await self._update_jira_with_comment(jira_id, "Needs Review", error_comment)
-                ticket.status = TicketStatus.IN_REVIEW
+                ticket.status = TicketStatus.IN_REVIEW.value
                 
             else:
                 # Retry available - update status and retry later
@@ -443,7 +443,7 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
 *AI Agent System - Automatic retry scheduled*"""
                 
                 await self._update_jira_with_comment(jira_id, None, retry_comment)
-                ticket.status = TicketStatus.TODO  # Reset for retry
+                ticket.status = TicketStatus.TODO.value  # Reset for retry
             
             db.add(ticket)
             db.commit()
@@ -847,7 +847,7 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
         with next(get_sync_db()) as db:
             ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
             if ticket and ticket.status == TicketStatus.FAILED:
-                ticket.status = TicketStatus.TODO
+                ticket.status = TicketStatus.TODO.value
                 ticket.retry_count = 0
                 db.add(ticket)
                 db.commit()
