@@ -1,3 +1,4 @@
+
 import asyncio
 from typing import Dict, Any, List
 from core.models import Ticket, TicketStatus, AgentType
@@ -162,29 +163,34 @@ class AgentOrchestrator:
         pipeline_start_time = time.time()
         logger.info(f"🎯 COMPREHENSIVE JIRA INTEGRATION - Ticket {ticket_id}")
         
-        # Get ticket details
-        with next(get_sync_db()) as db:
-            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-            if not ticket:
-                logger.error(f"❌ Ticket {ticket_id} not found")
-                return
-                
-            jira_id = ticket.jira_id
-            logger.info(f"📋 Processing {jira_id}: {ticket.title}")
-        
         # Create pipeline context
         pipeline_context = context_manager.create_context(ticket_id)
         
         try:
-            # PHASE 1: Start processing - Update JIRA to "In Progress"
-            # Fix enum comparison - check both enum and string values
-            if ticket.status == TicketStatus.TODO.value or ticket.status == TicketStatus.TODO:
-                logger.info(f"📈 JIRA UPDATE: Moving {jira_id} to In Progress")
+            # Get fresh ticket data with proper session management
+            with next(get_sync_db()) as db:
+                ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                if not ticket:
+                    logger.error(f"❌ Ticket {ticket_id} not found")
+                    return
+                    
+                jira_id = ticket.jira_id
+                ticket_title = ticket.title
+                ticket_priority = ticket.priority
+                ticket_description = ticket.description
+                ticket_error_trace = ticket.error_trace
+                current_status = ticket.status
                 
-                start_comment = f"""🤖 **AI Agent System Started Processing**
+                logger.info(f"📋 Processing {jira_id}: {ticket_title}")
+                
+                # PHASE 1: Start processing - Update JIRA to "In Progress"
+                if current_status == TicketStatus.TODO.value:
+                    logger.info(f"📈 JIRA UPDATE: Moving {jira_id} to In Progress")
+                    
+                    start_comment = f"""🤖 **AI Agent System Started Processing**
 
 **Ticket Analysis:**
-- Priority: {ticket.priority}
+- Priority: {ticket_priority}
 - Complexity: Auto-detected based on description length and error traces
 - Processing Mode: {'Full GitHub Integration' if self.github_client._is_configured() else 'JIRA-Only Mode'}
 
@@ -195,29 +201,34 @@ class AgentOrchestrator:
 4. 📢 **Communication** - {'Creating GitHub PR' if self.github_client._is_configured() else 'Updating ticket status'}
 
 **Status:** Analysis in progress..."""
-                
-                await self._update_jira_with_comment(jira_id, "In Progress", start_comment)
-                
-                # Update database - store as string value
-                with next(get_sync_db()) as db:
-                    ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-                    if ticket:
-                        ticket.status = TicketStatus.IN_PROGRESS.value
-                        db.add(ticket)
-                        db.commit()
+                    
+                    await self._update_jira_with_comment(jira_id, "In Progress", start_comment)
+                    
+                    # Update database status with fresh session
+                    ticket.status = TicketStatus.IN_PROGRESS.value
+                    db.add(ticket)
+                    db.commit()
+                    current_status = TicketStatus.IN_PROGRESS.value
             
             # PHASE 2: Planning Agent with JIRA Updates
             logger.info(f"🧠 PHASE 1: Enhanced Planning for {jira_id}")
             planner_start_time = time.time()
             
-            planner_context = await self._prepare_production_planner_context(ticket, pipeline_context.context_id)
+            # Create a fresh ticket object for planning context
+            with next(get_sync_db()) as db:
+                fresh_ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                planner_context = await self._prepare_production_planner_context(fresh_ticket, pipeline_context.context_id)
             
             if planner_context.get("github_access_failed"):
                 await self._mark_ticket_for_review(ticket_id, jira_id, 
                     "GitHub repository access failed during planning phase. Unable to analyze source files for intelligent fix generation.")
                 return
             
-            planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(ticket, planner_context)
+            # Execute planner with fresh ticket object
+            with next(get_sync_db()) as db:
+                fresh_ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                planner_result = await self.agents[AgentType.PLANNER].execute_with_retry(fresh_ticket, planner_context)
+            
             planner_duration = time.time() - planner_start_time
             
             # Update JIRA with planning results
@@ -244,14 +255,21 @@ class AgentOrchestrator:
             logger.info(f"👨‍💻 PHASE 2: Enhanced Development for {jira_id}")
             developer_start_time = time.time()
             
-            developer_context = await self._prepare_production_developer_context(ticket, planner_result, pipeline_context.context_id)
+            # Create fresh ticket object for development context
+            with next(get_sync_db()) as db:
+                fresh_ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                developer_context = await self._prepare_production_developer_context(fresh_ticket, planner_result, pipeline_context.context_id)
             
             if developer_context.get("github_access_failed"):
                 await self._mark_ticket_for_review(ticket_id, jira_id, 
                     "Unable to fetch source files for patch generation. GitHub access required for automated fixes.")
                 return
             
-            developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(ticket, developer_context)
+            # Execute developer with fresh ticket object
+            with next(get_sync_db()) as db:
+                fresh_ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                developer_result = await self.agents[AgentType.DEVELOPER].execute_with_retry(fresh_ticket, developer_context)
+            
             developer_duration = time.time() - developer_start_time
             
             # Update JIRA with development results
@@ -278,8 +296,12 @@ class AgentOrchestrator:
             logger.info(f"🧪 PHASE 3: Enhanced QA for {jira_id}")
             qa_start_time = time.time()
             
-            qa_context = await self._prepare_production_qa_context(ticket, developer_result, pipeline_context.context_id)
-            qa_result = await self.agents[AgentType.QA].execute_with_retry(ticket, qa_context)
+            # Create fresh ticket object for QA context
+            with next(get_sync_db()) as db:
+                fresh_ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                qa_context = await self._prepare_production_qa_context(fresh_ticket, developer_result, pipeline_context.context_id)
+                qa_result = await self.agents[AgentType.QA].execute_with_retry(fresh_ticket, qa_context)
+            
             qa_duration = time.time() - qa_start_time
             
             # Update JIRA with QA results
@@ -307,8 +329,12 @@ class AgentOrchestrator:
                 logger.info(f"📢 PHASE 4: Communication/Deployment for {jira_id}")
                 comm_start_time = time.time()
                 
-                comm_context = await self._prepare_production_communicator_context(ticket, qa_result, pipeline_context.context_id)
-                comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(ticket, comm_context)
+                # Create fresh ticket object for communication context
+                with next(get_sync_db()) as db:
+                    fresh_ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                    comm_context = await self._prepare_production_communicator_context(fresh_ticket, qa_result, pipeline_context.context_id)
+                    comm_result = await self.agents[AgentType.COMMUNICATOR].execute_with_retry(fresh_ticket, comm_context)
+                
                 comm_duration = time.time() - comm_start_time
                 
                 # Final success update to JIRA
@@ -336,7 +362,7 @@ class AgentOrchestrator:
                 
                 await self._update_jira_with_comment(jira_id, "Done", success_comment)
                 
-                # Update ticket status to completed
+                # Update ticket status to completed with fresh session
                 with next(get_sync_db()) as db:
                     ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
                     if ticket:
@@ -379,7 +405,7 @@ The automated system encountered a limitation that requires human intervention. 
         
         await self._update_jira_with_comment(jira_id, "Needs Review", review_comment)
         
-        # Update database - store as string value
+        # Update database with fresh session
         with next(get_sync_db()) as db:
             ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
             if ticket:
@@ -495,6 +521,7 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
         except Exception as e:
             logger.error(f"Error in initial repository analysis: {e}")
 
+    # ... keep existing code (all utility methods remain the same)
     async def process_ticket_pipeline(self, ticket_id: int):
         """Legacy method - redirects to comprehensive JIRA integration"""
         await self._process_ticket_with_comprehensive_jira_integration(ticket_id)
