@@ -1,4 +1,3 @@
-
 import asyncio
 from typing import Dict, Any, List
 from core.models import Ticket, TicketStatus, AgentType
@@ -18,6 +17,7 @@ from services.pipeline_context import context_manager, PipelineStage
 import logging
 import re
 import time
+from services.pipeline_validator import pipeline_validator
 
 logger = logging.getLogger(__name__)
 
@@ -865,6 +865,52 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
         
         logger.info(f"✅ Enhanced developer validation passed: {len(patches)} intelligent patches generated")
         return True
+
+    def validate_developer_results(self, result: Dict[str, Any]) -> bool:
+        """Enhanced validation for developer results using pipeline validator"""
+        try:
+            validation = pipeline_validator.validate_developer_results(result)
+            
+            if validation["valid"]:
+                logger.info(f"✅ Enhanced developer validation passed: {validation['reason']}")
+                if validation["recommendations"]:
+                    logger.info(f"💡 Recommendations: {', '.join(validation['recommendations'])}")
+                return True
+            else:
+                logger.warning(f"❌ Enhanced developer validation failed: {validation['reason']}")
+                if validation["recommendations"]:
+                    logger.warning(f"💡 Recommendations: {', '.join(validation['recommendations'])}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"💥 Developer validation error: {e}")
+            return False
+
+    async def _update_jira_with_results(self, ticket: Ticket, result: Dict[str, Any]) -> bool:
+        """Update JIRA with enhanced pipeline results"""
+        try:
+            validation = pipeline_validator.validate_developer_results(result)
+            action = pipeline_validator.determine_next_action(validation, ticket)
+            
+            # Update JIRA with appropriate status and comment
+            success = await self.jira_client.update_ticket_status(
+                ticket.jira_id,
+                action["jira_status"],
+                action["jira_comment"]
+            )
+            
+            if success:
+                logger.info(f"✅ Updated JIRA {ticket.jira_id} with action: {action['action']}")
+                
+                # Log manual review requirement
+                if action["require_manual_review"]:
+                    logger.warning(f"🔍 MANUAL REVIEW REQUIRED: {ticket.jira_id}")
+                    
+            return success
+            
+        except Exception as e:
+            logger.error(f"💥 Error updating JIRA with results: {e}")
+            return False
 
     async def retry_failed_ticket(self, ticket_id: int):
         """Retry processing a failed ticket"""

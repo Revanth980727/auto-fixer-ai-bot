@@ -1,4 +1,3 @@
-
 from agents.base_agent import BaseAgent
 from core.models import Ticket, AgentExecution, AgentType, PatchAttempt
 from core.database import get_sync_db
@@ -316,28 +315,29 @@ CRITICAL: Generate ONLY valid JSON. If you're not confident this file contains t
             self.log_execution(execution_id, f"💥 Semantic chunked processing error for {file_info['path']}: {e}")
             return None
 
-    # ... keep existing code (_save_patch_attempt_safely method)
     async def _save_patch_attempt_safely(self, ticket: Ticket, execution_id: int, patch_data: Dict[str, Any]):
         """Save patch attempt to database with proper error handling"""
         try:
-            db = get_sync_db()
+            db = next(get_sync_db())
             patch_attempt = PatchAttempt(
                 ticket_id=ticket.id,
-                agent_execution_id=execution_id,
+                execution_id=execution_id,  # Fixed: use execution_id instead of agent_execution_id
                 target_file=patch_data.get("target_file", "unknown"),
                 patch_content=patch_data.get("patch_content", ""),
+                patched_code=patch_data.get("patched_code", ""),
+                test_code=patch_data.get("test_code", ""),
+                commit_message=patch_data.get("commit_message", ""),
                 confidence_score=patch_data.get("confidence_score", 0.0),
-                explanation=patch_data.get("explanation", ""),
-                patch_type=patch_data.get("patch_type", "unknown"),
-                metadata=json.dumps({
-                    "commit_message": patch_data.get("commit_message", ""),
-                    "base_file_hash": patch_data.get("base_file_hash", ""),
-                    "processing_strategy": patch_data.get("processing_strategy", "unknown"),
-                    "semantic_evaluation": patch_data.get("semantic_evaluation", {}),
-                    "selection_reason": patch_data.get("selection_reason", "")
-                })
+                base_file_hash=patch_data.get("base_file_hash", ""),
+                patch_type=patch_data.get("patch_type", "enhanced_unified_diff"),
+                test_results=json.dumps(patch_data.get("semantic_evaluation", {})),
+                success=True
             )
             db.add(patch_attempt)
             db.commit()
+            logger.info(f"✅ Successfully saved patch attempt for {patch_data.get('target_file', 'unknown')}")
         except Exception as e:
-            logger.error(f"Failed to save patch attempt: {e}")
+            logger.error(f"❌ Failed to save patch attempt: {e}")
+        finally:
+            if 'db' in locals():
+                db.close()

@@ -1,4 +1,3 @@
-
 import requests
 from typing import List, Dict, Any, Optional
 from core.models import Ticket, TicketStatus
@@ -184,11 +183,16 @@ class JIRAClient:
             logger.exception("Full error traceback:")
             return []
     
-    # ... keep existing code (update_ticket_status method)
     async def update_ticket_status(self, jira_id: str, status: str, comment: str = ""):
-        """Update ticket status in JIRA"""
+        """Update ticket status in JIRA with improved error handling"""
         if not self.base_url or not self.api_token:
+            logger.error(f"❌ JIRA credentials missing for status update of {jira_id}")
             return False
+        
+        # Handle empty status - use default
+        if not status or status.strip() == "":
+            status = "In Progress"
+            logger.warning(f"⚠️ Empty status provided for {jira_id}, using default: {status}")
         
         try:
             # Add comment if provided
@@ -214,7 +218,7 @@ class JIRAClient:
                         }
                     }
                 )
-                logger.info(f"Added comment to {jira_id}: {comment_response.status_code}")
+                logger.info(f"📝 Added comment to {jira_id}: {comment_response.status_code}")
             
             # Get available transitions
             transitions_response = requests.get(
@@ -224,13 +228,34 @@ class JIRAClient:
             
             if transitions_response.status_code == 200:
                 transitions = transitions_response.json().get("transitions", [])
+                logger.info(f"🔄 Available transitions for {jira_id}: {[t['name'] for t in transitions]}")
                 
-                # Find matching transition by name
+                # Find matching transition by name (case-insensitive)
                 target_transition = None
                 for transition in transitions:
                     if transition["name"].lower() == status.lower():
                         target_transition = transition
                         break
+                
+                # If exact match not found, try partial matches
+                if not target_transition:
+                    status_keywords = {
+                        "in progress": ["progress", "development", "doing"],
+                        "review": ["review", "testing", "qa"],
+                        "done": ["done", "completed", "resolved", "closed"]
+                    }
+                    
+                    status_lower = status.lower()
+                    for transition in transitions:
+                        transition_name = transition["name"].lower()
+                        for keyword_group, keywords in status_keywords.items():
+                            if keyword_group in status_lower or any(k in status_lower for k in keywords):
+                                if keyword_group in transition_name or any(k in transition_name for k in keywords):
+                                    target_transition = transition
+                                    logger.info(f"🎯 Found partial match: '{status}' → '{transition['name']}'")
+                                    break
+                        if target_transition:
+                            break
                 
                 if target_transition:
                     # Execute transition
@@ -244,15 +269,21 @@ class JIRAClient:
                         }
                     )
                     
-                    return transition_response.status_code in [200, 204]
+                    success = transition_response.status_code in [200, 204]
+                    if success:
+                        logger.info(f"✅ Successfully transitioned {jira_id} to '{target_transition['name']}'")
+                    else:
+                        logger.error(f"❌ Failed to transition {jira_id}: {transition_response.status_code} - {transition_response.text}")
+                    return success
                 else:
-                    logger.warning(f"No transition found for status '{status}' on ticket {jira_id}")
+                    logger.warning(f"⚠️ No suitable transition found for status '{status}' on ticket {jira_id}")
                     return False
-            
-            return False
+            else:
+                logger.error(f"❌ Failed to get transitions for {jira_id}: {transitions_response.status_code}")
+                return False
             
         except Exception as e:
-            logger.error(f"Error updating JIRA ticket {jira_id}: {e}")
+            logger.error(f"💥 Error updating JIRA ticket {jira_id}: {e}")
             return False
     
     def format_ticket_data(self, jira_issue: Dict) -> Dict[str, Any]:
@@ -291,7 +322,6 @@ class JIRAClient:
         
         return ticket_data
     
-    # ... keep existing code (_extract_description_text and _extract_error_trace methods)
     def _extract_description_text(self, description: Dict) -> str:
         """Extract plain text from Atlassian Document Format"""
         if not description or not isinstance(description, dict):
