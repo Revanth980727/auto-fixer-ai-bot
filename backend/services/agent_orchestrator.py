@@ -465,7 +465,6 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
             logger.error(f"❌ JIRA update error for {jira_id}: {e}")
             return False
 
-    # ... keep existing code (all other methods remain the same)
     async def _perform_initial_repository_analysis(self):
         """Perform initial repository analysis for better file discovery"""
         try:
@@ -846,7 +845,8 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
         
         with next(get_sync_db()) as db:
             ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
-            if ticket and ticket.status == TicketStatus.FAILED:
+            # Fix enum comparison - compare string values
+            if ticket and ticket.status == TicketStatus.FAILED.value:
                 ticket.status = TicketStatus.TODO.value
                 ticket.retry_count = 0
                 db.add(ticket)
