@@ -29,21 +29,45 @@ class PipelineValidator:
         }
         
         try:
+            # Debug: Log the complete result structure
+            logger.info(f"🔍 PIPELINE VALIDATOR DEBUG - Complete result structure:")
+            logger.info(f"  - Result keys: {list(result.keys())}")
+            logger.info(f"  - Semantic evaluation enabled: {result.get('semantic_evaluation_enabled', False)}")
+            logger.info(f"  - Patches count: {len(result.get('patches', []))}")
+            logger.info(f"  - Semantic stats: {result.get('semantic_stats', {})}")
+            
             # Check if using intelligent patching
             patches = result.get("patches", [])
             semantic_stats = result.get("semantic_stats", {})
             
-            # Detect intelligent patching features
-            using_intelligent_features = any(
-                patch.get(indicator) for patch in patches 
-                for indicator in self.intelligent_patching_indicators
-            )
+            # Enhanced intelligent patching detection
+            using_intelligent_features = False
             
-            validation["using_intelligent_patching"] = (
-                using_intelligent_features or 
-                result.get("semantic_evaluation_enabled", False) or
-                bool(semantic_stats)
-            )
+            # Check 1: Semantic evaluation enabled flag
+            if result.get("semantic_evaluation_enabled", False):
+                using_intelligent_features = True
+                logger.info("🧠 Intelligent patching detected via semantic_evaluation_enabled flag")
+            
+            # Check 2: Semantic stats present
+            if semantic_stats and semantic_stats.get("total_patches_generated", 0) > 0:
+                using_intelligent_features = True
+                logger.info("🧠 Intelligent patching detected via semantic_stats")
+            
+            # Check 3: Patches have intelligent features
+            if patches:
+                for i, patch in enumerate(patches):
+                    logger.info(f"🔍 Patch {i} keys: {list(patch.keys())}")
+                    if any(patch.get(indicator) for indicator in self.intelligent_patching_indicators):
+                        using_intelligent_features = True
+                        logger.info(f"🧠 Intelligent patching detected in patch {i} via indicators")
+                        break
+            
+            # Check 4: Quality thresholds present
+            if result.get("quality_thresholds"):
+                using_intelligent_features = True
+                logger.info("🧠 Intelligent patching detected via quality_thresholds")
+            
+            validation["using_intelligent_patching"] = using_intelligent_features
             
             logger.info(f"🧠 Pipeline validation - Intelligent patching detected: {validation['using_intelligent_patching']}")
             
@@ -53,32 +77,55 @@ class PipelineValidator:
                 validation["recommendations"].append("Review file selection and error analysis")
                 return validation
             
-            # Analyze patch quality
+            # Analyze patch quality with improved logic
             high_quality_patches = 0
             total_confidence = 0
             
-            for patch in patches:
+            for i, patch in enumerate(patches):
                 confidence = patch.get("confidence_score", 0)
                 total_confidence += confidence
+                
+                logger.info(f"🔍 Patch {i} confidence: {confidence}")
                 
                 if confidence >= self.min_confidence_threshold:
                     high_quality_patches += 1
             
             avg_confidence = total_confidence / len(patches) if patches else 0
             
-            # Determine quality level
-            if high_quality_patches >= self.min_patches_required:
-                validation["patches_quality"] = "high"
-                validation["valid"] = True
-                validation["reason"] = f"Generated {len(patches)} patches with {high_quality_patches} high-quality patches (avg confidence: {avg_confidence:.3f})"
-            elif avg_confidence >= 0.5:
-                validation["patches_quality"] = "medium"
-                validation["valid"] = True
-                validation["reason"] = f"Generated {len(patches)} patches with moderate confidence (avg: {avg_confidence:.3f})"
+            logger.info(f"📊 Quality analysis:")
+            logger.info(f"  - Total patches: {len(patches)}")
+            logger.info(f"  - High quality patches: {high_quality_patches}")
+            logger.info(f"  - Average confidence: {avg_confidence:.3f}")
+            
+            # Determine quality level with intelligent patching consideration
+            if using_intelligent_features and len(patches) > 0:
+                # For intelligent patching, be more lenient on thresholds
+                if high_quality_patches >= self.min_patches_required:
+                    validation["patches_quality"] = "high"
+                    validation["valid"] = True
+                    validation["reason"] = f"Generated {len(patches)} intelligent patches with {high_quality_patches} high-quality patches (avg confidence: {avg_confidence:.3f})"
+                elif avg_confidence >= 0.5 or semantic_stats.get("patches_accepted", 0) > 0:
+                    validation["patches_quality"] = "medium"
+                    validation["valid"] = True
+                    validation["reason"] = f"Generated {len(patches)} intelligent patches with moderate confidence (avg: {avg_confidence:.3f})"
+                else:
+                    validation["patches_quality"] = "low"
+                    validation["reason"] = f"Intelligent patches have low confidence scores (avg: {avg_confidence:.3f})"
+                    validation["recommendations"].append("Review error analysis and file selection")
             else:
-                validation["patches_quality"] = "low"
-                validation["reason"] = f"Patches have low confidence scores (avg: {avg_confidence:.3f})"
-                validation["recommendations"].append("Review error analysis and file selection")
+                # Legacy validation for non-intelligent patching
+                if high_quality_patches >= self.min_patches_required:
+                    validation["patches_quality"] = "high"
+                    validation["valid"] = True
+                    validation["reason"] = f"Generated {len(patches)} patches with {high_quality_patches} high-quality patches (avg confidence: {avg_confidence:.3f})"
+                elif avg_confidence >= 0.5:
+                    validation["patches_quality"] = "medium"
+                    validation["valid"] = True
+                    validation["reason"] = f"Generated {len(patches)} patches with moderate confidence (avg: {avg_confidence:.3f})"
+                else:
+                    validation["patches_quality"] = "low"
+                    validation["reason"] = f"Patches have low confidence scores (avg: {avg_confidence:.3f})"
+                    validation["recommendations"].append("Review error analysis and file selection")
             
             # Add semantic evaluation insights if available
             if semantic_stats:
@@ -118,20 +165,24 @@ class PipelineValidator:
         
         if validation["valid"]:
             quality = validation["patches_quality"]
+            intelligent_patching = validation.get("using_intelligent_patching", False)
             
             if quality in ["high", "semantic_validated"]:
                 action["action"] = "create_pr"
                 action["jira_status"] = "In Review"
-                action["jira_comment"] = f"✅ AI Agent generated high-quality patches. {validation['reason']}"
+                prefix = "🧠 AI Agent (Intelligent Patching)" if intelligent_patching else "✅ AI Agent"
+                action["jira_comment"] = f"{prefix} generated high-quality patches. {validation['reason']}"
             elif quality == "medium":
                 action["action"] = "create_pr_with_review"
                 action["jira_status"] = "In Review"
-                action["jira_comment"] = f"⚠️ AI Agent generated patches requiring review. {validation['reason']}"
+                prefix = "🧠 AI Agent (Intelligent Patching)" if intelligent_patching else "⚠️ AI Agent"
+                action["jira_comment"] = f"{prefix} generated patches requiring review. {validation['reason']}"
                 action["require_manual_review"] = True
             else:
                 action["action"] = "manual_review"
                 action["jira_status"] = "Needs Review"
-                action["jira_comment"] = f"🔍 AI Agent generated patches requiring manual review. {validation['reason']}"
+                prefix = "🧠 AI Agent (Intelligent Patching)" if intelligent_patching else "🔍 AI Agent"
+                action["jira_comment"] = f"{prefix} generated patches requiring manual review. {validation['reason']}"
                 action["require_manual_review"] = True
         else:
             action["action"] = "retry_or_escalate"

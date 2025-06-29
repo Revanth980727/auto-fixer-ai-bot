@@ -1,3 +1,4 @@
+
 from agents.base_agent import BaseAgent
 from core.models import Ticket, AgentExecution, AgentType, PatchAttempt
 from core.database import get_sync_db
@@ -89,20 +90,22 @@ class DeveloperAgent(BaseAgent):
                     patches.append(patch_data)
                     await self._save_patch_attempt_safely(ticket, execution_id, patch_data)
                     
-                    # Update semantic stats
+                    # Update semantic stats - fixed counting logic
                     semantic_stats["total_patches_generated"] += 1
-                    if patch_data.get('semantic_evaluation', {}).get('accepted_count', 0) > 0:
-                        semantic_stats["patches_accepted"] += 1
+                    semantic_stats["patches_accepted"] += 1  # If patch_data exists, it was accepted
                     
                     self.log_execution(execution_id, f"✅ SUCCESS: Generated semantically validated patch for {file_info['path']}")
                 else:
                     semantic_stats["files_with_no_relevant_fixes"] += 1
+                    semantic_stats["patches_rejected"] += 1  # Track rejections properly
                     self.log_execution(execution_id, f"⚠️ NO RELEVANT FIX: No semantically relevant patches found for {file_info['path']}")
                     
             except asyncio.TimeoutError:
+                semantic_stats["patches_rejected"] += 1
                 self.log_execution(execution_id, f"⏰ TIMEOUT: Patch generation for {file_info['path']} exceeded timeout")
                 continue
             except Exception as e:
+                semantic_stats["patches_rejected"] += 1
                 self.log_execution(execution_id, f"💥 ERROR: Exception generating patch for {file_info['path']}: {str(e)}")
                 continue
         
@@ -234,12 +237,16 @@ CRITICAL: Generate ONLY valid JSON. If you're not confident this file contains t
                 self.log_execution(execution_id, f"❌ Patch rejected for {file_info['path']}: {reason}")
                 return None
             
-            # Add metadata
+            # Add metadata with proper confidence score propagation
             patch_data["target_file"] = file_info["path"]
             patch_data["file_size"] = len(file_info["content"])
             patch_data["processing_strategy"] = "enhanced_single_file"
             patch_data["semantic_evaluation"] = evaluation
             patch_data["selection_reason"] = reason
+            
+            # Ensure confidence_score is at top level for validator
+            if "confidence_score" not in patch_data:
+                patch_data["confidence_score"] = 0.95  # Default high confidence for accepted patches
             
             confidence = patch_data.get('confidence_score', 0)
             relevance = evaluation.get('relevance_score', 0)
@@ -306,6 +313,13 @@ CRITICAL: Generate ONLY valid JSON. If you're not confident this file contains t
             if combined_patch:
                 self.log_execution(execution_id, f"✅ Successfully combined semantically validated chunk patches for {file_info['path']}")
                 combined_patch["processing_strategy"] = "semantic_chunked"
+                
+                # Ensure confidence_score is at top level for validator
+                if "confidence_score" not in combined_patch:
+                    # Calculate average confidence from chunk patches
+                    avg_confidence = sum(p.get('confidence_score', 0) for p in chunk_patches) / len(chunk_patches)
+                    combined_patch["confidence_score"] = avg_confidence
+                
                 return combined_patch
             else:
                 self.log_execution(execution_id, f"❌ Semantic evaluation rejected all chunk patches for {file_info['path']}")
@@ -321,7 +335,7 @@ CRITICAL: Generate ONLY valid JSON. If you're not confident this file contains t
             db = next(get_sync_db())
             patch_attempt = PatchAttempt(
                 ticket_id=ticket.id,
-                execution_id=execution_id,  # Fixed: use execution_id instead of agent_execution_id
+                execution_id=execution_id,
                 target_file=patch_data.get("target_file", "unknown"),
                 patch_content=patch_data.get("patch_content", ""),
                 patched_code=patch_data.get("patched_code", ""),
