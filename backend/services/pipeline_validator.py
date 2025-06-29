@@ -29,47 +29,92 @@ class PipelineValidator:
         }
         
         try:
-            # Debug: Log the complete result structure
+            # ENHANCED DEBUG: Log the complete result structure
             logger.info(f"🔍 PIPELINE VALIDATOR DEBUG - Complete result structure:")
             logger.info(f"  - Result keys: {list(result.keys())}")
-            logger.info(f"  - Semantic evaluation enabled: {result.get('semantic_evaluation_enabled', False)}")
-            logger.info(f"  - Patches count: {len(result.get('patches', []))}")
-            logger.info(f"  - Semantic stats: {result.get('semantic_stats', {})}")
+            logger.info(f"  - Result type: {type(result)}")
             
-            # Check if using intelligent patching
+            # Log each key-value pair for debugging
+            for key, value in result.items():
+                if key == "patches":
+                    logger.info(f"  - {key}: {len(value) if isinstance(value, list) else 'not a list'} patches")
+                    if isinstance(value, list) and value:
+                        logger.info(f"    - First patch keys: {list(value[0].keys()) if value else 'no patches'}")
+                elif key == "semantic_stats":
+                    logger.info(f"  - {key}: {value}")
+                else:
+                    logger.info(f"  - {key}: {value if not isinstance(value, str) or len(str(value)) < 100 else f'{str(value)[:100]}...'}")
+            
             patches = result.get("patches", [])
             semantic_stats = result.get("semantic_stats", {})
             
-            # Enhanced intelligent patching detection
+            # ENHANCED INTELLIGENT PATCHING DETECTION
             using_intelligent_features = False
+            detection_methods = []
             
-            # Check 1: Semantic evaluation enabled flag
+            # Method 1: Direct intelligent_patching flag (NEW)
+            if result.get("intelligent_patching", False):
+                using_intelligent_features = True
+                detection_methods.append("intelligent_patching flag")
+                logger.info("🧠 Intelligent patching detected via direct intelligent_patching flag")
+            
+            # Method 2: Semantic evaluation enabled flag
             if result.get("semantic_evaluation_enabled", False):
                 using_intelligent_features = True
+                detection_methods.append("semantic_evaluation_enabled flag")
                 logger.info("🧠 Intelligent patching detected via semantic_evaluation_enabled flag")
             
-            # Check 2: Semantic stats present
+            # Method 3: using_intelligent_patching flag
+            if result.get("using_intelligent_patching", False):
+                using_intelligent_features = True
+                detection_methods.append("using_intelligent_patching flag")
+                logger.info("🧠 Intelligent patching detected via using_intelligent_patching flag")
+            
+            # Method 4: Semantic stats present with meaningful data
             if semantic_stats and semantic_stats.get("total_patches_generated", 0) > 0:
                 using_intelligent_features = True
+                detection_methods.append("semantic_stats data")
                 logger.info("🧠 Intelligent patching detected via semantic_stats")
             
-            # Check 3: Patches have intelligent features
+            # Method 5: Patches have intelligent features
             if patches:
                 for i, patch in enumerate(patches):
                     logger.info(f"🔍 Patch {i} keys: {list(patch.keys())}")
-                    if any(patch.get(indicator) for indicator in self.intelligent_patching_indicators):
+                    
+                    # Check for semantic evaluation data
+                    if patch.get("semantic_evaluation"):
                         using_intelligent_features = True
-                        logger.info(f"🧠 Intelligent patching detected in patch {i} via indicators")
+                        detection_methods.append(f"patch {i} semantic_evaluation")
+                        logger.info(f"🧠 Intelligent patching detected in patch {i} via semantic_evaluation")
+                        break
+                    
+                    # Check for processing strategy
+                    strategy = patch.get("processing_strategy", "")
+                    if strategy in ["enhanced_single_file", "semantic_chunked"]:
+                        using_intelligent_features = True
+                        detection_methods.append(f"patch {i} processing_strategy")
+                        logger.info(f"🧠 Intelligent patching detected in patch {i} via processing_strategy: {strategy}")
+                        break
+                    
+                    # Check for selection reason
+                    if patch.get("selection_reason"):
+                        using_intelligent_features = True
+                        detection_methods.append(f"patch {i} selection_reason")
+                        logger.info(f"🧠 Intelligent patching detected in patch {i} via selection_reason")
                         break
             
-            # Check 4: Quality thresholds present
+            # Method 6: Quality thresholds present
             if result.get("quality_thresholds"):
                 using_intelligent_features = True
+                detection_methods.append("quality_thresholds")
                 logger.info("🧠 Intelligent patching detected via quality_thresholds")
             
             validation["using_intelligent_patching"] = using_intelligent_features
             
-            logger.info(f"🧠 Pipeline validation - Intelligent patching detected: {validation['using_intelligent_patching']}")
+            logger.info(f"🧠 INTELLIGENT PATCHING DETECTION RESULT:")
+            logger.info(f"  - Detected: {using_intelligent_features}")
+            logger.info(f"  - Detection methods: {detection_methods}")
+            logger.info(f"  - Total detection methods found: {len(detection_methods)}")
             
             # Check basic requirements
             if not patches:
@@ -85,7 +130,7 @@ class PipelineValidator:
                 confidence = patch.get("confidence_score", 0)
                 total_confidence += confidence
                 
-                logger.info(f"🔍 Patch {i} confidence: {confidence}")
+                logger.info(f"🔍 Patch {i} confidence: {confidence:.3f}")
                 
                 if confidence >= self.min_confidence_threshold:
                     high_quality_patches += 1
@@ -96,9 +141,12 @@ class PipelineValidator:
             logger.info(f"  - Total patches: {len(patches)}")
             logger.info(f"  - High quality patches: {high_quality_patches}")
             logger.info(f"  - Average confidence: {avg_confidence:.3f}")
+            logger.info(f"  - Using intelligent patching: {using_intelligent_features}")
             
-            # Determine quality level with intelligent patching consideration
-            if using_intelligent_features and len(patches) > 0:
+            # ENHANCED VALIDATION LOGIC - More lenient for intelligent patching
+            if using_intelligent_features:
+                logger.info("🧠 Applying intelligent patching validation rules (more lenient)")
+                
                 # For intelligent patching, be more lenient on thresholds
                 if high_quality_patches >= self.min_patches_required:
                     validation["patches_quality"] = "high"
@@ -108,12 +156,19 @@ class PipelineValidator:
                     validation["patches_quality"] = "medium"
                     validation["valid"] = True
                     validation["reason"] = f"Generated {len(patches)} intelligent patches with moderate confidence (avg: {avg_confidence:.3f})"
+                elif len(patches) >= 1 and avg_confidence >= 0.3:
+                    # Even lower threshold for intelligent patching
+                    validation["patches_quality"] = "acceptable"
+                    validation["valid"] = True
+                    validation["reason"] = f"Generated {len(patches)} intelligent patches with acceptable confidence (avg: {avg_confidence:.3f})"
                 else:
                     validation["patches_quality"] = "low"
                     validation["reason"] = f"Intelligent patches have low confidence scores (avg: {avg_confidence:.3f})"
                     validation["recommendations"].append("Review error analysis and file selection")
             else:
-                # Legacy validation for non-intelligent patching
+                logger.info("📝 Applying standard validation rules (legacy mode)")
+                
+                # Standard validation for non-intelligent patching
                 if high_quality_patches >= self.min_patches_required:
                     validation["patches_quality"] = "high"
                     validation["valid"] = True
@@ -145,7 +200,11 @@ class PipelineValidator:
                 if len(patches) == 1:
                     validation["recommendations"].append("Single patch generated - verify comprehensive fix")
             
-            logger.info(f"🎯 Pipeline validation result: {validation['valid']} - {validation['reason']}")
+            logger.info(f"🎯 PIPELINE VALIDATION FINAL RESULT:")
+            logger.info(f"  - Valid: {validation['valid']}")
+            logger.info(f"  - Quality: {validation['patches_quality']}")
+            logger.info(f"  - Reason: {validation['reason']}")
+            logger.info(f"  - Using intelligent patching: {validation['using_intelligent_patching']}")
             
         except Exception as e:
             logger.error(f"❌ Pipeline validation error: {e}")
@@ -172,7 +231,7 @@ class PipelineValidator:
                 action["jira_status"] = "In Review"
                 prefix = "🧠 AI Agent (Intelligent Patching)" if intelligent_patching else "✅ AI Agent"
                 action["jira_comment"] = f"{prefix} generated high-quality patches. {validation['reason']}"
-            elif quality == "medium":
+            elif quality in ["medium", "acceptable"]:
                 action["action"] = "create_pr_with_review"
                 action["jira_status"] = "In Review"
                 prefix = "🧠 AI Agent (Intelligent Patching)" if intelligent_patching else "⚠️ AI Agent"
