@@ -25,7 +25,7 @@ class LargeFileHandler:
         return len(file_content) > self.chunk_size_limit
     
     def create_file_chunks(self, file_content: str, file_path: str) -> List[Dict[str, Any]]:
-        """Create optimized chunks with smart overlap for context preservation"""
+        """Create optimized chunks with smart overlap for context preservation - FIXED ALGORITHM"""
         if not self.should_chunk_file(file_content):
             return [{
                 "content": file_content,
@@ -36,62 +36,114 @@ class LargeFileHandler:
             }]
         
         lines = file_content.splitlines(keepends=True)
+        total_lines = len(lines)
         chunks = []
         chunk_id = 0
         
-        # Calculate optimal lines per chunk
+        # Calculate optimal lines per chunk with better distribution
         total_chars = len(file_content)
         chars_per_chunk = self.chunk_size_limit
-        lines_per_chunk = max(40, int(len(lines) * chars_per_chunk / total_chars))
+        estimated_lines_per_chunk = max(40, int(total_lines * chars_per_chunk / total_chars))
         
-        # Ensure we don't create chunks that are too small
-        min_lines_per_chunk = 20
-        lines_per_chunk = max(lines_per_chunk, min_lines_per_chunk)
+        # Ensure reasonable chunk sizes
+        min_lines_per_chunk = 30
+        max_lines_per_chunk = min(200, total_lines // 2)  # Don't make chunks too large
+        lines_per_chunk = max(min_lines_per_chunk, min(estimated_lines_per_chunk, max_lines_per_chunk))
         
-        logger.info(f"Chunking {file_path}: {len(lines)} lines into ~{lines_per_chunk} lines per chunk with {self.context_overlap_lines}-line overlap")
+        logger.info(f"📊 Chunking {file_path}: {total_lines} lines into ~{lines_per_chunk} lines per chunk with {self.context_overlap_lines}-line overlap")
         
-        start_line = 0
-        while start_line < len(lines):
-            end_line = min(start_line + lines_per_chunk, len(lines))
+        current_line = 0
+        processed_line_ranges = set()  # Track processed ranges to prevent duplicates
+        
+        while current_line < total_lines:
+            # Calculate chunk boundaries
+            chunk_start = current_line
+            chunk_end = min(current_line + lines_per_chunk, total_lines)
             
-            # Add smart overlap from previous chunk for context preservation
-            overlap_start = max(0, start_line - self.context_overlap_lines)
-            chunk_content = ''.join(lines[overlap_start:end_line])
+            # Add overlap from previous chunk for context
+            overlap_start = max(0, chunk_start - self.context_overlap_lines)
             
-            # Ensure chunk isn't too large
+            # CRITICAL FIX: Prevent duplicate chunks
+            range_key = (overlap_start, chunk_end)
+            if range_key in processed_line_ranges:
+                logger.warning(f"⚠️ Detected duplicate chunk range {range_key}, advancing to prevent infinite loop")
+                current_line = chunk_end
+                continue
+            
+            processed_line_ranges.add(range_key)
+            
+            # Extract chunk content
+            chunk_content = ''.join(lines[overlap_start:chunk_end])
+            
+            # Validate chunk size and adjust if necessary
             if len(chunk_content) > self.chunk_size_limit:
-                # Reduce chunk size if it's still too large
-                reduced_end = start_line + (lines_per_chunk // 2)
-                chunk_content = ''.join(lines[overlap_start:reduced_end])
-                end_line = reduced_end
+                # Reduce chunk size if it's too large
+                reduced_end = chunk_start + (lines_per_chunk // 2)
+                chunk_end = min(reduced_end, total_lines)
+                chunk_content = ''.join(lines[overlap_start:chunk_end])
+                logger.info(f"📏 Reduced chunk {chunk_id + 1} size from {len(''.join(lines[overlap_start:chunk_end]))} to {len(chunk_content)} chars")
             
-            chunks.append({
+            # SAFETY CHECK: Ensure chunk makes progress
+            if chunk_end <= chunk_start and chunk_id > 0:
+                logger.error(f"🚨 CHUNKING ERROR: Chunk {chunk_id + 1} would not advance (start={chunk_start}, end={chunk_end})")
+                break
+            
+            # Create chunk metadata
+            chunk_info = {
                 "content": chunk_content,
-                "start_line": start_line + 1,  # 1-based line numbers
-                "end_line": end_line,
+                "start_line": chunk_start + 1,  # 1-based line numbers
+                "end_line": chunk_end,
                 "chunk_id": chunk_id,
                 "is_single_chunk": False,
                 "overlap_start": overlap_start + 1,  # 1-based
-                "overlap_lines": self.context_overlap_lines,
+                "overlap_lines": min(self.context_overlap_lines, chunk_start),
                 "total_chunks": 0,  # Will be filled later
-                "size": len(chunk_content)
-            })
+                "size": len(chunk_content),
+                "actual_lines": chunk_end - chunk_start,
+                "with_overlap_lines": chunk_end - overlap_start
+            }
             
-            start_line = end_line - self.context_overlap_lines
+            chunks.append(chunk_info)
+            
+            # CRITICAL FIX: Proper advancement logic
+            # Move to next chunk position, ensuring we always make progress
+            next_start = chunk_end
+            
+            # If we're near the end and would create a tiny chunk, merge with current
+            remaining_lines = total_lines - next_start
+            if remaining_lines > 0 and remaining_lines < min_lines_per_chunk:
+                logger.info(f"📝 Merging remaining {remaining_lines} lines into current chunk {chunk_id + 1}")
+                # Expand current chunk to include remaining lines
+                expanded_content = ''.join(lines[overlap_start:total_lines])
+                chunks[-1].update({
+                    "content": expanded_content,
+                    "end_line": total_lines,
+                    "size": len(expanded_content),
+                    "actual_lines": total_lines - chunk_start,
+                    "with_overlap_lines": total_lines - overlap_start
+                })
+                break
+            
+            current_line = next_start
             chunk_id += 1
             
-            # Safety limit to prevent infinite loops
-            if chunk_id > 50:
-                logger.warning(f"Reached maximum chunk limit for {file_path}")
+            # SAFETY LIMIT: Prevent infinite loops
+            if chunk_id > 100:
+                logger.error(f"🚨 SAFETY LIMIT: Reached maximum chunk limit (100) for {file_path}")
                 break
         
         # Update total chunks count
         for chunk in chunks:
             chunk["total_chunks"] = len(chunks)
         
-        logger.info(f"Created {len(chunks)} optimized chunks with smart overlap for {file_path}")
+        # VALIDATION: Check for chunking quality
+        total_processed_lines = sum(chunk["actual_lines"] for chunk in chunks)
+        if total_processed_lines < total_lines * 0.9:  # Should cover at least 90% of file
+            logger.warning(f"⚠️ Chunking may be incomplete: processed {total_processed_lines}/{total_lines} lines ({total_processed_lines/total_lines*100:.1f}%)")
+        
+        logger.info(f"✅ Created {len(chunks)} validated chunks for {file_path}")
         for i, chunk in enumerate(chunks):
-            logger.info(f"  Chunk {i+1}: lines {chunk['start_line']}-{chunk['end_line']} (overlap from {chunk.get('overlap_start', 'N/A')}), size: {chunk['size']} chars")
+            logger.info(f"  📦 Chunk {i+1}: lines {chunk['start_line']}-{chunk['end_line']} (actual: {chunk['actual_lines']}, with overlap: {chunk['with_overlap_lines']}), size: {chunk['size']} chars")
         
         return chunks
     
@@ -104,6 +156,7 @@ OVERLAP INFO:
 - This chunk includes {chunk.get('overlap_lines', 0)} lines of overlap from the previous section for context
 - Overlap starts at line {chunk.get('overlap_start', 'N/A')}
 - Focus on lines {chunk['start_line']}-{chunk['end_line']} for actual changes
+- Actual content lines: {chunk.get('actual_lines', 'N/A')}
 """
         
         return f"""
