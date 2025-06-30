@@ -38,6 +38,7 @@ class Ticket(Base):
     retry_count = Column(Integer, default=0)
     assigned_agent = Column(String)
     estimated_files = Column(JSON)
+    github_pr_url = Column(String)  # Add missing field for GitHub PR URL
     
     executions = relationship("AgentExecution", back_populates="ticket")
     patches = relationship("PatchAttempt", back_populates="ticket")
