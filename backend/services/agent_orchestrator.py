@@ -9,6 +9,7 @@ from core.models import Ticket, TicketStatus
 from core.database import get_sync_db
 import logging
 import json
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,78 @@ class AgentOrchestrator:
         self.patch_service = PatchService()
         self.planner_agent = PlannerAgent()
         self.developer_agent = DeveloperAgent()
+        self.running = False
+        self.processing_task = None
+    
+    async def start_processing(self):
+        """Start the orchestrator processing loop"""
+        logger.info("Starting AgentOrchestrator processing...")
+        self.running = True
+        
+        while self.running:
+            try:
+                # Get pending tickets from database
+                with next(get_sync_db()) as db:
+                    pending_tickets = db.query(Ticket).filter(
+                        Ticket.status == TicketStatus.TODO
+                    ).limit(10).all()
+                
+                if pending_tickets:
+                    logger.info(f"Processing {len(pending_tickets)} pending tickets")
+                    for ticket in pending_tickets:
+                        if not self.running:
+                            break
+                        
+                        # Update ticket status to in_progress
+                        with next(get_sync_db()) as db:
+                            db_ticket = db.query(Ticket).filter(Ticket.id == ticket.id).first()
+                            if db_ticket:
+                                db_ticket.status = TicketStatus.IN_PROGRESS
+                                db.commit()
+                        
+                        # Process the ticket
+                        await self.process_ticket(ticket)
+                else:
+                    logger.debug("No pending tickets found")
+                
+                # Wait before next check
+                await asyncio.sleep(30)
+                
+            except Exception as e:
+                logger.error(f"Error in orchestrator processing loop: {e}")
+                await asyncio.sleep(60)  # Wait longer on error
+    
+    async def stop_processing(self):
+        """Stop the orchestrator processing"""
+        logger.info("Stopping AgentOrchestrator processing...")
+        self.running = False
+        
+        if self.processing_task:
+            self.processing_task.cancel()
+            try:
+                await self.processing_task
+            except asyncio.CancelledError:
+                pass
+    
+    async def get_agent_status(self):
+        """Get the current status of the orchestrator"""
+        return {
+            "orchestrator_running": self.running,
+            "agents": {
+                "planner": "active" if self.planner_agent else "inactive",
+                "developer": "active" if self.developer_agent else "inactive"
+            }
+        }
+    
+    async def retry_failed_ticket(self, ticket_id: int):
+        """Retry processing a failed ticket"""
+        with next(get_sync_db()) as db:
+            ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+            if ticket:
+                ticket.status = TicketStatus.TODO
+                ticket.retry_count += 1
+                db.commit()
+                logger.info(f"Queued ticket {ticket_id} for retry")
     
     async def process_ticket(self, ticket: Ticket):
         """Process a ticket through the entire pipeline"""
@@ -94,7 +167,7 @@ class AgentOrchestrator:
         
         logger.info(f"✅ Updated JIRA {ticket.jira_key}")
     
-    async def _create_pull_request(self, ticket: Ticket, developer_result: Dict, action: Dict):
+    async def _create_pull_request(self, ticket: Ticket, developer_result: dict, action: dict):
         """Create a pull request with the generated patches"""
         patches = developer_result.get("patches", [])
         
@@ -117,7 +190,7 @@ class AgentOrchestrator:
         else:
             logger.error(f"❌ Failed to create PR for {ticket.jira_key}")
     
-    async def _handle_manual_review(self, ticket: Ticket, action: Dict):
+    async def _handle_manual_review(self, ticket: Ticket, action: dict):
         """Handle manual review requirement"""
         with next(get_sync_db()) as db:
             db_ticket = db.query(Ticket).filter(Ticket.id == ticket.id).first()
