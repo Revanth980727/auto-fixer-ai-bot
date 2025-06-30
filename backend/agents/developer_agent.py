@@ -1,4 +1,3 @@
-
 from agents.base_agent import BaseAgent
 from core.models import Ticket, AgentExecution, AgentType, PatchAttempt
 from core.database import get_sync_db
@@ -27,8 +26,8 @@ class DeveloperAgent(BaseAgent):
         self.semantic_evaluator = SemanticEvaluator()
         self.minimal_prompter = MinimalChangePrompter()
         self.patch_validator = PatchValidator()
-        self.large_file_threshold = 15000  # Force chunking for files over 15KB
-        self.max_hunk_size = 50  # Maximum lines per hunk
+        self.large_file_threshold = 12000  # Reduced threshold for better chunking
+        self.max_hunk_size = 30  # Stricter size limit
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Generate minimal, focused code patches with enhanced validation"""
@@ -284,82 +283,185 @@ Generate only valid JSON responses with minimal unified diffs."""
             self.log_execution(execution_id, f"❌ Patch size validation error: {e}")
             return False
     
-    # ... keep existing code (chunked patch generation, save patch attempt methods)
-    
     async def _generate_minimal_chunked_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate minimal patch using chunking strategy for large files"""
+        """Generate minimal patch using improved chunking strategy with intelligent merging."""
         try:
-            self.log_execution(execution_id, f"🧩 Starting minimal chunked processing for {file_info['path']}")
+            self.log_execution(execution_id, f"🧩 Starting intelligent chunked processing for {file_info['path']}")
             
+            # Create logical chunks with better boundaries
             chunks = self.file_handler.create_file_chunks(file_info['content'], file_info['path'])
-            self.log_execution(execution_id, f"📦 Created {len(chunks)} chunks for minimal processing")
+            self.log_execution(execution_id, f"📦 Created {len(chunks)} logical chunks for intelligent processing")
             
             chunk_patches = []
+            high_confidence_chunks = 0
+            
             for chunk in chunks:
                 chunk_num = chunk['chunk_id'] + 1
                 total_chunks = len(chunks)
                 
-                self.log_execution(execution_id, f"🔧 Processing chunk {chunk_num}/{total_chunks} with surgical approach")
+                self.log_execution(execution_id, f"🔧 Processing logical chunk {chunk_num}/{total_chunks}")
                 
-                # Use minimal change prompter for chunks
+                # Use enhanced prompting for chunks
                 chunk_prompt = self.minimal_prompter.create_chunked_minimal_prompt(ticket, chunk, file_info)
+                
+                # Enhanced system prompt for chunk processing
+                system_prompt = """You are analyzing a logical code chunk for minimal fixes. 
+
+CRITICAL REQUIREMENTS:
+- Only suggest changes if this chunk contains the actual issue
+- Maintain proper indentation and code structure
+- Preserve imports and class/function boundaries
+- Keep changes minimal and focused
+- If this chunk doesn't relate to the issue, return confidence_score: 0.1
+
+Generate only valid JSON responses."""
                 
                 try:
                     response = await self.openai_client.complete_chat([
-                        {"role": "system", "content": "You are analyzing code chunks for surgical fixes. Only suggest changes if they directly address the specific issue and are absolutely necessary."},
+                        {"role": "system", "content": system_prompt},
                         {"role": "user", "content": chunk_prompt}
                     ], model="gpt-4o-mini")
                     
                     chunk_data, error = self.json_handler.clean_and_parse_json(response)
                     
-                    if chunk_data and chunk_data.get('confidence_score', 0) > 0.5:
-                        # Validate chunk patch size
-                        if self._validate_patch_size(chunk_data, execution_id):
+                    if chunk_data and chunk_data.get('confidence_score', 0) > 0.3:
+                        # Enhanced chunk validation
+                        if self._validate_chunk_patch(chunk_data, chunk, execution_id):
+                            # Add chunk context information
+                            chunk_data.update({
+                                'start_line': chunk['start_line'],
+                                'end_line': chunk['end_line'],
+                                'chunk_id': chunk['chunk_id']
+                            })
                             chunk_patches.append(chunk_data)
-                            self.log_execution(execution_id, f"✅ Surgical chunk {chunk_num} processed and validated")
+                            
+                            if chunk_data.get('confidence_score', 0) > 0.7:
+                                high_confidence_chunks += 1
+                            
+                            self.log_execution(execution_id, f"✅ Logical chunk {chunk_num} processed successfully (confidence: {chunk_data.get('confidence_score', 0):.3f})")
                         else:
-                            self.log_execution(execution_id, f"❌ Chunk {chunk_num} rejected for size")
+                            self.log_execution(execution_id, f"❌ Chunk {chunk_num} failed validation")
                     else:
-                        self.log_execution(execution_id, f"⚠️ Chunk {chunk_num} had low confidence - no surgical changes")
+                        self.log_execution(execution_id, f"⚠️ Chunk {chunk_num} had low confidence - skipping")
                         
                 except Exception as e:
-                    self.log_execution(execution_id, f"💥 Error processing surgical chunk {chunk_num}: {e}")
+                    self.log_execution(execution_id, f"💥 Error processing chunk {chunk_num}: {e}")
                     continue
             
             if not chunk_patches:
-                self.log_execution(execution_id, f"❌ No surgical chunk patches for {file_info['path']}")
+                self.log_execution(execution_id, f"❌ No valid chunk patches for {file_info['path']}")
                 return None
             
-            self.log_execution(execution_id, f"🔗 Combining {len(chunk_patches)} surgical chunk patches")
+            self.log_execution(execution_id, f"🔗 Combining {len(chunk_patches)} chunk patches with intelligent merging")
+            self.log_execution(execution_id, f"  - High confidence chunks: {high_confidence_chunks}")
+            
+            # Use the improved chunk combination with intelligent merging
             combined_patch = await self.file_handler.combine_chunk_patches(chunk_patches, file_info, ticket)
             
             if combined_patch:
+                # Add metadata for surgical processing
                 combined_patch.update({
-                    "processing_strategy": "surgical_chunked",
+                    "processing_strategy": "intelligent_chunked",
                     "target_file": file_info["path"],
                     "file_size": len(file_info["content"]),
-                    "base_file_hash": file_info["hash"]
+                    "base_file_hash": file_info["hash"],
+                    "high_confidence_chunks": high_confidence_chunks,
+                    "total_chunks_processed": len(chunk_patches)
                 })
                 
-                if "confidence_score" not in combined_patch:
-                    avg_confidence = sum(p.get('confidence_score', 0) for p in chunk_patches) / len(chunk_patches)
-                    combined_patch["confidence_score"] = avg_confidence
-                
-                # Final size validation for combined patch
-                if self._validate_patch_size(combined_patch, execution_id):
-                    self.log_execution(execution_id, f"✅ Successfully combined and validated surgical chunk patches for {file_info['path']}")
+                # Final comprehensive validation
+                if self._validate_combined_patch(combined_patch, execution_id):
+                    self.log_execution(execution_id, f"✅ Successfully created and validated intelligent chunked patch for {file_info['path']}")
                     return combined_patch
                 else:
-                    self.log_execution(execution_id, f"❌ Combined patch rejected for size: {file_info['path']}")
+                    self.log_execution(execution_id, f"❌ Combined patch failed final validation: {file_info['path']}")
                     return None
             else:
-                self.log_execution(execution_id, f"❌ Failed to combine surgical chunk patches for {file_info['path']}")
+                self.log_execution(execution_id, f"❌ Failed to intelligently combine chunk patches for {file_info['path']}")
                 return None
                 
         except Exception as e:
-            self.log_execution(execution_id, f"💥 Surgical chunked processing error for {file_info['path']}: {e}")
+            self.log_execution(execution_id, f"💥 Intelligent chunked processing error for {file_info['path']}: {e}")
             return None
-
+    
+    def _validate_chunk_patch(self, chunk_data: Dict[str, Any], chunk: Dict, execution_id: int) -> bool:
+        """Enhanced validation for individual chunk patches."""
+        try:
+            # Check for required fields
+            if not chunk_data.get('patched_code'):
+                self.log_execution(execution_id, f"❌ Chunk patch missing patched_code")
+                return False
+            
+            # Validate chunk patch size
+            patched_code = chunk_data.get('patched_code', '')
+            original_lines = chunk['content'].count('\n')
+            patched_lines = patched_code.count('\n')
+            
+            # Allow reasonable growth but prevent massive expansion
+            if patched_lines > original_lines * 2 and patched_lines > 100:
+                self.log_execution(execution_id, f"❌ Chunk patch too large: {patched_lines} lines vs {original_lines} original")
+                return False
+            
+            # Check for structural integrity
+            if not self._validate_chunk_structure(patched_code, chunk):
+                self.log_execution(execution_id, f"❌ Chunk patch failed structural validation")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.log_execution(execution_id, f"❌ Chunk patch validation error: {e}")
+            return False
+    
+    def _validate_chunk_structure(self, patched_code: str, chunk: Dict) -> bool:
+        """Validate that chunk structure is maintained."""
+        try:
+            original_lines = chunk['content'].split('\n')
+            patched_lines = patched_code.split('\n')
+            
+            # Check for major structural elements preservation
+            original_classes = len([l for l in original_lines if l.strip().startswith('class ')])
+            patched_classes = len([l for l in patched_lines if l.strip().startswith('class ')])
+            
+            original_functions = len([l for l in original_lines if l.strip().startswith('def ')])
+            patched_functions = len([l for l in patched_lines if l.strip().startswith('def ')])
+            
+            # Allow some flexibility but prevent major structural changes
+            if abs(original_classes - patched_classes) > 1 or abs(original_functions - patched_functions) > 2:
+                logger.warning(f"❌ Major structural changes detected in chunk")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Chunk structure validation error: {e}")
+            return False
+    
+    def _validate_combined_patch(self, combined_patch: Dict[str, Any], execution_id: int) -> bool:
+        """Final validation for combined patches."""
+        try:
+            # Check validation info from merger
+            validation_info = combined_patch.get('validation_info', {})
+            if not validation_info.get('valid', False):
+                self.log_execution(execution_id, f"❌ Combined patch failed merger validation: {validation_info.get('error', 'Unknown error')}")
+                return False
+            
+            # Additional patch size validation
+            if not self._validate_patch_size(combined_patch, execution_id):
+                return False
+            
+            # Check confidence threshold
+            confidence = combined_patch.get('confidence_score', 0)
+            if confidence < 0.4:
+                self.log_execution(execution_id, f"❌ Combined patch confidence too low: {confidence}")
+                return False
+            
+            return True
+            
+        except Exception as e:
+            self.log_execution(execution_id, f"❌ Combined patch validation error: {e}")
+            return False
+    
     async def _save_patch_attempt_safely(self, ticket: Ticket, execution_id: int, patch_data: Dict[str, Any]):
         """Save patch attempt to database with proper error handling"""
         try:
