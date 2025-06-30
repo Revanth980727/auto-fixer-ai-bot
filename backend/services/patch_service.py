@@ -1,4 +1,3 @@
-
 import re
 import hashlib
 from typing import Dict, Any, List, Optional, Tuple
@@ -121,33 +120,60 @@ class PatchService:
                 }
             }
         
-        # CRITICAL FIX: Use patched_code directly instead of applying unified diff
-        # This avoids the malformed diff application issue
+        # Apply patches sequentially with validation
+        modified_content = current_content
         successful_patches = []
         
         for patch in patches:
             try:
-                # Get the patched code directly - this is the complete fixed file content
-                patched_code = patch.get("patched_code", "")
+                # Apply individual patch
+                patch_content = patch.get("patch_content", "")
+                logger.info(f"🔍 Applying patch to {file_path}:")
+                logger.info(f"   Patch content length: {len(patch_content)}")
+                logger.info(f"   Patch content preview: {patch_content[:200]}...")
                 
-                logger.info(f"🔍 Applying patch to {file_path}")
-                logger.info(f"   Patched code length: {len(patched_code)} characters")
-                logger.info(f"   Original code length: {len(current_content)} characters")
-                
-                # Validate patched content exists and is substantial
-                if not patched_code or not patched_code.strip():
-                    logger.error(f"❌ Patched code is empty for {file_path}")
+                # Validate patch content
+                if not patch_content or not patch_content.strip():
+                    logger.error(f"❌ Patch content is empty for {file_path}")
                     return {
                         "success": False,
                         "patches": patches,
-                        "error": "Patched code is empty"
+                        "error": "Patch content is empty"
                     }
                 
-                # Use the complete patched code as the new file content
-                # This bypasses the problematic unified diff application
-                modified_content = patched_code
-                successful_patches.append(patch)
-                logger.info(f"✅ Successfully applied patch to {file_path} using complete patched code")
+                # Check for proper unified diff format
+                if "--- " not in patch_content or "+++ " not in patch_content:
+                    logger.error(f"❌ Patch content is not in unified diff format for {file_path}")
+                    return {
+                        "success": False,
+                        "patches": patches,
+                        "error": "Patch content is not in unified diff format"
+                    }
+                
+                # Check for hunk headers
+                if "@@" not in patch_content:
+                    logger.error(f"❌ Patch content missing hunk headers for {file_path}")
+                    return {
+                        "success": False,
+                        "patches": patches,
+                        "error": "Patch content missing hunk headers"
+                    }
+                
+                logger.info(f"✅ Patch content validation passed for {file_path}")
+                
+                result = self._apply_unified_diff(modified_content, patch_content)
+                
+                if result["success"]:
+                    modified_content = result["content"]
+                    successful_patches.append(patch)
+                    logger.info(f"✅ Successfully applied patch to {file_path}")
+                else:
+                    logger.warning(f"❌ Failed to apply patch to {file_path}: {result['error']}")
+                    return {
+                        "success": False,
+                        "patches": patches,
+                        "error": result["error"]
+                    }
                     
             except Exception as e:
                 logger.error(f"💥 Exception applying patch to {file_path}: {e}")
@@ -195,9 +221,96 @@ class PatchService:
         }
     
     def _apply_unified_diff(self, original_content: str, patch_content: str) -> Dict[str, Any]:
-        """Apply a unified diff patch to content - DEPRECATED, use patched_code directly"""
-        logger.warning("⚠️ _apply_unified_diff is deprecated - using patched_code directly instead")
-        return {"success": False, "error": "Method deprecated - use patched_code directly"}
+        """Apply a unified diff patch to content with proper parsing"""
+        if not patch_content or not patch_content.strip():
+            return {"success": False, "error": "Empty patch content"}
+        
+        try:
+            logger.info(f"🔍 Applying unified diff patch")
+            logger.info(f"   Original content length: {len(original_content)}")
+            logger.info(f"   Patch content length: {len(patch_content)}")
+            
+            # Split content into lines for easier manipulation
+            original_lines = original_content.splitlines(keepends=True)
+            patch_lines = patch_content.splitlines()
+            
+            # Parse the unified diff format properly
+            modified_lines = original_lines.copy()
+            current_line = 0
+            in_hunk = False
+            hunk_start = 0
+            hunk_old_count = 0
+            hunk_new_count = 0
+            
+            for patch_line in patch_lines:
+                # Skip git diff header lines (--- a/file, +++ b/file)
+                if patch_line.startswith('--- ') or patch_line.startswith('+++ '):
+                    logger.info(f"   Skipping git header: {patch_line}")
+                    continue
+                
+                if patch_line.startswith('@@'):
+                    # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+                    match = re.match(r'@@ -(\d+),?(\d+)? \+(\d+),?(\d+)? @@', patch_line)
+                    if match:
+                        old_start = int(match.group(1)) - 1  # Convert to 0-based indexing
+                        hunk_old_count = int(match.group(2)) if match.group(2) else 1
+                        new_start = int(match.group(3)) - 1  # Convert to 0-based indexing
+                        hunk_new_count = int(match.group(4)) if match.group(4) else 1
+                        
+                        current_line = old_start
+                        in_hunk = True
+                        hunk_start = old_start
+                        
+                        logger.info(f"   Processing hunk: old_start={old_start}, old_count={hunk_old_count}, new_start={new_start}, new_count={hunk_new_count}")
+                        continue
+                
+                if not in_hunk:
+                    continue
+                
+                if patch_line.startswith(' '):
+                    # Context line - verify it matches and advance
+                    if current_line < len(modified_lines):
+                        expected_line = modified_lines[current_line].rstrip('\n')
+                        if expected_line != patch_line[1:]:
+                            logger.error(f"❌ Context line mismatch at line {current_line}")
+                            logger.error(f"   Expected: {expected_line}")
+                            logger.error(f"   Found: {patch_line[1:]}")
+                            return {"success": False, "error": f"Context line mismatch at line {current_line}"}
+                    current_line += 1
+                    
+                elif patch_line.startswith('-'):
+                    # Remove line
+                    if current_line < len(modified_lines):
+                        removed_line = modified_lines[current_line].rstrip('\n')
+                        del modified_lines[current_line]
+                        logger.info(f"   Removed line {current_line}: {removed_line}")
+                    else:
+                        logger.error(f"❌ Cannot remove line {current_line} - beyond file bounds")
+                        return {"success": False, "error": f"Cannot remove line {current_line} - beyond file bounds"}
+                        
+                elif patch_line.startswith('+'):
+                    # Add line - but skip if it's a git header line
+                    if patch_line.startswith('+++ '):
+                        logger.info(f"   Skipping git header in content: {patch_line}")
+                        continue
+                    
+                    new_line = patch_line[1:] + '\n'
+                    modified_lines.insert(current_line, new_line)
+                    current_line += 1
+                    logger.info(f"   Added line at position {current_line-1}: {new_line.rstrip()}")
+            
+            result_content = ''.join(modified_lines)
+            logger.info(f"✅ Successfully applied unified diff patch")
+            logger.info(f"   Result content length: {len(result_content)}")
+            
+            return {
+                "success": True,
+                "content": result_content
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error applying unified diff: {e}")
+            return {"success": False, "error": str(e)}
     
     def _detect_version_conflicts(self, patches: List[Dict], current_content: str, current_hash: str) -> List[Dict]:
         """Detect if patches are based on different file versions"""
@@ -231,9 +344,7 @@ class PatchService:
             if file_path.endswith('.py'):
                 logger.info(f"🔍 Running Python syntax validation for {file_path}")
                 try:
-                    # TEMPORARY: Skip Python syntax validation to debug patch application
-                    # compile(content, file_path, 'exec')
-                    logger.info(f"⚠️ Python syntax validation temporarily disabled for {file_path}")
+                    compile(content, file_path, 'exec')
                     logger.info(f"✅ Python syntax validation passed for {file_path}")
                 except SyntaxError as e:
                     logger.error(f"❌ Python syntax validation failed for {file_path}: {e}")
