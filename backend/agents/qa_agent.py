@@ -74,6 +74,18 @@ class QAAgent(BaseAgent):
                 # Update patch attempts with results
                 self._update_patch_results_from_intelligent_application(ticket, patch_results)
                 
+                # DEBUG: Log patch results structure
+                self.log_execution(execution_id, f"🔍 PATCH RESULTS DEBUG:")
+                self.log_execution(execution_id, f"  - patch_results keys: {list(patch_results.keys())}")
+                self.log_execution(execution_id, f"  - successful_patches type: {type(patch_results['successful_patches'])}")
+                self.log_execution(execution_id, f"  - successful_patches length: {len(patch_results['successful_patches'])}")
+                self.log_execution(execution_id, f"  - failed_patches length: {len(patch_results['failed_patches'])}")
+                self.log_execution(execution_id, f"  - conflicts_detected length: {len(patch_results['conflicts_detected'])}")
+                self.log_execution(execution_id, f"  - files_modified: {patch_results['files_modified']}")
+                
+                if patch_results['successful_patches']:
+                    self.log_execution(execution_id, f"  - First successful patch keys: {list(patch_results['successful_patches'][0].keys())}")
+                
                 successful_patches = len(patch_results["successful_patches"])
                 total_patches = len(patches)
                 
@@ -197,43 +209,49 @@ class QAAgent(BaseAgent):
         """Update patch attempts with intelligent application results"""
         try:
             with next(get_sync_db()) as db:
-                # Update successful patches
-                for successful_patch in patch_results["successful_patches"]:
-                    patch_id = successful_patch.get("id")
-                    if patch_id:
-                        patch_attempt = db.query(PatchAttempt).filter(
-                            PatchAttempt.ticket_id == ticket.id,
-                            PatchAttempt.id == patch_id
-                        ).first()
-                        
-                        if patch_attempt:
-                            patch_attempt.success = True
-                            patch_attempt.test_results = {
-                                "validation_type": "intelligent_application",
-                                "success": True,
-                                "applied_successfully": True
-                            }
+                # Get all patch attempts for this ticket that haven't been tested yet
+                untested_patches = db.query(PatchAttempt).filter(
+                    PatchAttempt.ticket_id == ticket.id,
+                    PatchAttempt.success == True  # Only consider patches that were successfully generated
+                ).all()
+                
+                # Create a mapping of target files to patch attempts
+                patch_attempts_by_file = {}
+                for patch_attempt in untested_patches:
+                    patch_attempts_by_file[patch_attempt.target_file] = patch_attempt
+                
+                # Update successful patches based on patch service results
+                successful_files = [patch.get("target_file") for patch in patch_results["successful_patches"]]
+                for file_path in successful_files:
+                    if file_path in patch_attempts_by_file:
+                        patch_attempt = patch_attempts_by_file[file_path]
+                        patch_attempt.test_results = {
+                            "validation_type": "intelligent_application",
+                            "success": True,
+                            "applied_successfully": True,
+                            "qa_tested": True
+                        }
+                        logger.info(f"✅ Updated patch attempt for {file_path} as successfully applied")
                 
                 # Update failed patches
+                failed_files = []
                 for failed_patch in patch_results["failed_patches"]:
                     patch_info = failed_patch.get("patch", {})
-                    patch_id = patch_info.get("id")
-                    if patch_id:
-                        patch_attempt = db.query(PatchAttempt).filter(
-                            PatchAttempt.ticket_id == ticket.id,
-                            PatchAttempt.id == patch_id
-                        ).first()
-                        
-                        if patch_attempt:
-                            patch_attempt.success = False
-                            patch_attempt.test_results = {
-                                "validation_type": "intelligent_application",
-                                "success": False,
-                                "error": failed_patch.get("error"),
-                                "application_failed": True
-                            }
+                    file_path = patch_info.get("target_file")
+                    if file_path and file_path in patch_attempts_by_file:
+                        patch_attempt = patch_attempts_by_file[file_path]
+                        patch_attempt.test_results = {
+                            "validation_type": "intelligent_application",
+                            "success": False,
+                            "error": failed_patch.get("error"),
+                            "application_failed": True,
+                            "qa_tested": True
+                        }
+                        failed_files.append(file_path)
+                        logger.warning(f"❌ Updated patch attempt for {file_path} as failed: {failed_patch.get('error')}")
                 
                 db.commit()
+                logger.info(f"✅ Updated {len(successful_files)} successful and {len(failed_files)} failed patch attempts")
                 
         except Exception as e:
             logger.error(f"Failed to update patch results: {e}")
