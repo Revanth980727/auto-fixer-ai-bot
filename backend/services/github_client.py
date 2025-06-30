@@ -1,4 +1,3 @@
-
 import requests
 from typing import Dict, Any, Optional, List
 import os
@@ -143,6 +142,8 @@ class GitHubClient:
             branch = config.github_target_branch
         
         try:
+            logger.info(f"🔧 Starting commit for {file_path} to branch {branch}")
+            
             # Get current file SHA if it exists
             file_url = f"{self.base_url}/repos/{self.repo_owner}/{self.repo_name}/contents/{file_path}"
             file_response = requests.get(file_url, headers=self.headers, params={"ref": branch})
@@ -156,17 +157,25 @@ class GitHubClient:
             if file_response.status_code == 200:
                 # File exists, include SHA for update
                 commit_data["sha"] = file_response.json()["sha"]
+                logger.info(f"📝 File {file_path} exists, updating with SHA")
+            else:
+                logger.info(f"📝 File {file_path} does not exist, creating new file")
             
+            logger.info(f"🔧 Sending commit request for {file_path}")
             response = requests.put(file_url, headers=self.headers, json=commit_data)
+            
+            logger.info(f"🔧 Commit response status: {response.status_code}")
+            
             if response.status_code in [200, 201]:
-                logger.info(f"Successfully committed file: {file_path} to branch: {branch}")
+                logger.info(f"✅ Successfully committed file: {file_path} to branch: {branch}")
                 return True
             else:
-                logger.error(f"Failed to commit file {file_path}: {response.status_code}")
+                logger.error(f"❌ Failed to commit file {file_path}: HTTP {response.status_code}")
+                logger.error(f"❌ Response text: {response.text}")
                 return False
             
         except Exception as e:
-            logger.error(f"Error committing file {file_path}: {e}")
+            logger.error(f"❌ Error committing file {file_path}: {e}")
             return False
     
     async def create_pull_request(self, title: str, body: str, head_branch: str, base_branch: str = None) -> Optional[Dict]:
