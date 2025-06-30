@@ -1,3 +1,4 @@
+
 from agents.base_agent import BaseAgent
 from core.models import Ticket, AgentExecution, AgentType, PatchAttempt
 from core.database import get_sync_db
@@ -7,6 +8,7 @@ from services.json_response_handler import JSONResponseHandler
 from services.large_file_handler import LargeFileHandler
 from services.semantic_evaluator import SemanticEvaluator
 from services.minimal_change_prompter import MinimalChangePrompter
+from services.patch_validator import PatchValidator
 from typing import Dict, Any, Optional
 import json
 import asyncio
@@ -24,11 +26,13 @@ class DeveloperAgent(BaseAgent):
         self.file_handler = LargeFileHandler()
         self.semantic_evaluator = SemanticEvaluator()
         self.minimal_prompter = MinimalChangePrompter()
+        self.patch_validator = PatchValidator()
         self.large_file_threshold = 15000  # Force chunking for files over 15KB
+        self.max_hunk_size = 50  # Maximum lines per hunk
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Generate minimal, focused code patches with semantic evaluation"""
-        self.log_execution(execution_id, "🚀 Starting enhanced developer agent with minimal change approach")
+        """Generate minimal, focused code patches with enhanced validation"""
+        self.log_execution(execution_id, "🚀 Starting minimal change developer agent")
         
         if not context:
             self.log_execution(execution_id, "❌ No context provided - developer agent requires planner analysis")
@@ -45,17 +49,18 @@ class DeveloperAgent(BaseAgent):
             self.log_execution(execution_id, "❌ No source files available - cannot generate patches")
             raise Exception("No source files available for patch generation")
         
-        self.log_execution(execution_id, f"📁 Processing {len(source_files)} files with minimal change approach")
+        self.log_execution(execution_id, f"📁 Processing {len(source_files)} files with minimal change strategy")
         
-        # Generate minimal patches with semantic evaluation
+        # Generate minimal patches with enhanced validation
         patches = []
         total_files = len(source_files)
-        semantic_stats = {
+        processing_stats = {
             "total_patches_generated": 0,
             "patches_accepted": 0,
             "patches_rejected": 0,
+            "patches_rejected_for_size": 0,
             "files_with_no_relevant_fixes": 0,
-            "minimal_changes_applied": 0
+            "truly_minimal_changes": 0
         }
         
         for i, file_info in enumerate(source_files, 1):
@@ -67,78 +72,83 @@ class DeveloperAgent(BaseAgent):
             
             try:
                 file_size = len(file_info['content'])
-                timeout = 360.0 if file_size > self.large_file_threshold else 240.0
+                timeout = 300.0  # Reduced timeout for focused changes
                 
-                self.log_execution(execution_id, f"⏱️ Setting timeout to {timeout}s for {file_info['path']}")
+                self.log_execution(execution_id, f"⏱️ Setting timeout to {timeout}s for minimal changes")
                 
-                # Use minimal change patch generation
+                # Use minimal change patch generation with enhanced validation
                 patch_data = await asyncio.wait_for(
-                    self._generate_minimal_patch_with_evaluation(ticket, file_info, planner_data, execution_id),
+                    self._generate_minimal_patch_with_validation(ticket, file_info, planner_data, execution_id),
                     timeout=timeout
                 )
                 
                 if patch_data:
-                    patches.append(patch_data)
-                    await self._save_patch_attempt_safely(ticket, execution_id, patch_data)
-                    
-                    semantic_stats["total_patches_generated"] += 1
-                    semantic_stats["patches_accepted"] += 1
-                    
-                    # Track if this was a truly minimal change
-                    lines_modified = patch_data.get("lines_modified", "unknown")
-                    if isinstance(lines_modified, (int, str)) and str(lines_modified).isdigit() and int(lines_modified) <= 5:
-                        semantic_stats["minimal_changes_applied"] += 1
-                    
-                    self.log_execution(execution_id, f"✅ SUCCESS: Generated minimal patch for {file_info['path']} ({lines_modified} lines)")
+                    # Validate patch size before accepting
+                    if self._validate_patch_size(patch_data, execution_id):
+                        patches.append(patch_data)
+                        await self._save_patch_attempt_safely(ticket, execution_id, patch_data)
+                        
+                        processing_stats["total_patches_generated"] += 1
+                        processing_stats["patches_accepted"] += 1
+                        
+                        # Track minimal changes
+                        lines_modified = patch_data.get("lines_modified", 0)
+                        if isinstance(lines_modified, (int, str)) and str(lines_modified).isdigit() and int(lines_modified) <= 10:
+                            processing_stats["truly_minimal_changes"] += 1
+                        
+                        self.log_execution(execution_id, f"✅ Accepted minimal patch for {file_info['path']} ({lines_modified} lines)")
+                    else:
+                        processing_stats["patches_rejected_for_size"] += 1
+                        self.log_execution(execution_id, f"❌ Rejected patch for {file_info['path']} - too large")
                 else:
-                    semantic_stats["files_with_no_relevant_fixes"] += 1
-                    semantic_stats["patches_rejected"] += 1
-                    self.log_execution(execution_id, f"⚠️ NO RELEVANT FIX: No minimal fixes found for {file_info['path']}")
+                    processing_stats["files_with_no_relevant_fixes"] += 1
+                    processing_stats["patches_rejected"] += 1
+                    self.log_execution(execution_id, f"⚠️ No minimal fixes found for {file_info['path']}")
                     
             except asyncio.TimeoutError:
-                semantic_stats["patches_rejected"] += 1
-                self.log_execution(execution_id, f"⏰ TIMEOUT: Patch generation for {file_info['path']} exceeded timeout")
+                processing_stats["patches_rejected"] += 1
+                self.log_execution(execution_id, f"⏰ TIMEOUT: Minimal patch generation for {file_info['path']} exceeded timeout")
                 continue
             except Exception as e:
-                semantic_stats["patches_rejected"] += 1
-                self.log_execution(execution_id, f"💥 ERROR: Exception generating patch for {file_info['path']}: {str(e)}")
+                processing_stats["patches_rejected"] += 1
+                self.log_execution(execution_id, f"💥 ERROR: Exception generating minimal patch for {file_info['path']}: {str(e)}")
                 continue
         
         if not patches:
             self.log_execution(execution_id, "💥 CRITICAL: No minimal patches generated")
-            raise Exception("No minimal patches were generated - all fixes were below quality thresholds")
+            raise Exception("No minimal patches were generated - all fixes were rejected for being too large or irrelevant")
         
         # Log minimal change summary
         self.log_execution(execution_id, f"🔧 MINIMAL CHANGE SUMMARY:")
         self.log_execution(execution_id, f"  - Files processed: {total_files}")
-        self.log_execution(execution_id, f"  - Patches generated: {semantic_stats['total_patches_generated']}")
-        self.log_execution(execution_id, f"  - Truly minimal changes: {semantic_stats['minimal_changes_applied']}")
-        self.log_execution(execution_id, f"  - Files with no relevant fixes: {semantic_stats['files_with_no_relevant_fixes']}")
+        self.log_execution(execution_id, f"  - Patches generated: {processing_stats['total_patches_generated']}")
+        self.log_execution(execution_id, f"  - Truly minimal changes: {processing_stats['truly_minimal_changes']}")
+        self.log_execution(execution_id, f"  - Rejected for size: {processing_stats['patches_rejected_for_size']}")
+        self.log_execution(execution_id, f"  - Files with no relevant fixes: {processing_stats['files_with_no_relevant_fixes']}")
         
         result = {
             "patches_generated": len(patches),
             "patches": patches,
             "planner_analysis": planner_data,
             
-            # Validator compatibility flags
-            "intelligent_patching": True,
-            "semantic_evaluation_enabled": True,
-            "using_intelligent_patching": True,
-            "minimal_change_approach": True,  # New flag for minimal changes
+            # Enhanced validation flags
+            "minimal_change_approach": True,
+            "size_validation_enabled": True,
+            "enhanced_prompting": True,
             
             "processing_summary": f"Generated {len(patches)} minimal patches from {total_files} files",
-            "semantic_stats": semantic_stats,
-            "quality_thresholds": {
-                "confidence_threshold": self.semantic_evaluator.confidence_threshold,
-                "relevance_threshold": self.semantic_evaluator.relevance_threshold
+            "processing_stats": processing_stats,
+            "validation_thresholds": {
+                "max_hunk_size": self.max_hunk_size,
+                "confidence_threshold": self.semantic_evaluator.confidence_threshold
             }
         }
         
         self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} minimal patches")
         return result
     
-    async def _generate_minimal_patch_with_evaluation(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate minimal patch using appropriate strategy with semantic evaluation"""
+    async def _generate_minimal_patch_with_validation(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
+        """Generate minimal patch with size validation"""
         file_size = len(file_info['content'])
         
         if file_size > self.large_file_threshold:
@@ -149,19 +159,38 @@ class DeveloperAgent(BaseAgent):
             return await self._generate_minimal_single_patch(ticket, file_info, analysis, execution_id)
     
     async def _generate_minimal_single_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate minimal patch for a single file using focused prompts"""
+        """Generate minimal patch for a single file with strict size limits"""
         try:
-            self.log_execution(execution_id, f"📝 Starting minimal single file patch for {file_info['path']}")
+            self.log_execution(execution_id, f"📝 Starting surgical patch generation for {file_info['path']}")
             
-            # Use minimal change prompter
+            # Use minimal change prompter with enhanced instructions
             patch_prompt = self.minimal_prompter.create_minimal_patch_prompt(ticket, file_info, analysis)
             
-            self.log_execution(execution_id, f"🤖 Sending minimal change request for {file_info['path']}")
+            # Enhanced system prompt for minimal changes
+            system_prompt = f"""You are an expert at making SURGICAL code fixes. Your goal is to modify the ABSOLUTE MINIMUM necessary to fix the issue.
+
+CRITICAL CONSTRAINTS:
+- Never modify more than {self.max_hunk_size} lines unless absolutely critical
+- Preserve ALL existing imports, class definitions, and function signatures
+- Fix ONLY the specific error mentioned in the ticket
+- Do NOT refactor, reorganize, or "improve" code beyond fixing the issue
+- If the issue requires a large change, break it into the smallest possible modification
+
+FORBIDDEN ACTIONS:
+- Rewriting entire functions unless they are completely broken
+- Adding new imports unless essential for the fix  
+- Changing code style or formatting
+- Modifying unrelated code sections
+- Creating wholesale replacements
+
+Generate only valid JSON responses with minimal unified diffs."""
+            
+            self.log_execution(execution_id, f"🤖 Sending surgical change request for {file_info['path']}")
             
             response = await self.openai_client.complete_chat([
-                {"role": "system", "content": "You are an expert at making minimal, surgical code fixes. Only change what is absolutely necessary to fix the issue. Generate only valid JSON responses."},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": patch_prompt}
-            ], model="gpt-4.1-2025-04-14")
+            ], model="gpt-4o-mini")
             
             # Parse response
             patch_data, error = self.json_handler.clean_and_parse_json(response)
@@ -170,10 +199,16 @@ class DeveloperAgent(BaseAgent):
                 self.log_execution(execution_id, f"❌ JSON parsing failed for {file_info['path']}: {error}")
                 return None
             
-            # Validate patch data
+            # Validate patch data structure
             is_valid, validation_error = self.json_handler.validate_patch_json(patch_data)
             if not is_valid:
                 self.log_execution(execution_id, f"❌ Patch validation failed for {file_info['path']}: {validation_error}")
+                return None
+            
+            # Pre-validate patch content
+            pre_valid, pre_error = self.patch_validator.validate_pre_application(patch_data)
+            if not pre_valid:
+                self.log_execution(execution_id, f"❌ Pre-application validation failed for {file_info['path']}: {pre_error}")
                 return None
             
             # Perform semantic evaluation
@@ -187,29 +222,69 @@ class DeveloperAgent(BaseAgent):
             should_accept, reason = self.semantic_evaluator.should_accept_patch(patch_data, evaluation)
             
             if not should_accept:
-                self.log_execution(execution_id, f"❌ Minimal patch rejected for {file_info['path']}: {reason}")
+                self.log_execution(execution_id, f"❌ Semantic evaluation rejected patch for {file_info['path']}: {reason}")
                 return None
             
             # Ensure all required fields are present
             patch_data.update({
                 "target_file": file_info["path"],
                 "file_size": len(file_info["content"]),
-                "processing_strategy": "minimal_single_file",
+                "processing_strategy": "surgical_single_file",
                 "semantic_evaluation": evaluation,
                 "selection_reason": reason,
-                "confidence_score": patch_data.get("confidence_score", 0.95)
+                "confidence_score": patch_data.get("confidence_score", 0.95),
+                "base_file_hash": file_info["hash"]
             })
             
             confidence = patch_data.get('confidence_score', 0)
             relevance = evaluation.get('relevance_score', 0)
             lines_modified = patch_data.get('lines_modified', 'unknown')
             
-            self.log_execution(execution_id, f"🎯 Minimal patch accepted for {file_info['path']} - Confidence: {confidence:.3f}, Relevance: {relevance:.3f}, Lines: {lines_modified}")
+            self.log_execution(execution_id, f"🎯 Surgical patch accepted for {file_info['path']} - Confidence: {confidence:.3f}, Relevance: {relevance:.3f}, Lines: {lines_modified}")
             return patch_data
             
         except Exception as e:
-            self.log_execution(execution_id, f"💥 Minimal single file error for {file_info['path']}: {str(e)}")
+            self.log_execution(execution_id, f"💥 Surgical patch error for {file_info['path']}: {str(e)}")
             return None
+    
+    def _validate_patch_size(self, patch_data: Dict[str, Any], execution_id: int) -> bool:
+        """Validate that patch size is reasonable for minimal changes"""
+        try:
+            patch_content = patch_data.get('patch_content', '')
+            
+            # Count actual changes (not context lines)
+            add_lines = patch_content.count('\n+')
+            remove_lines = patch_content.count('\n-')
+            total_changes = add_lines + remove_lines
+            
+            # Check for massive hunks
+            if total_changes > self.max_hunk_size * 2:  # Allow some flexibility
+                self.log_execution(execution_id, f"❌ Patch rejected: {total_changes} changes exceeds limit of {self.max_hunk_size * 2}")
+                return False
+            
+            # Check for suspicious patterns
+            if remove_lines > 100 and add_lines < 10:
+                self.log_execution(execution_id, f"❌ Patch rejected: Suspicious deletion pattern ({remove_lines} deletions, {add_lines} additions)")
+                return False
+            
+            # Validate patched code syntax if Python
+            target_file = patch_data.get('target_file', '')
+            if target_file.endswith('.py'):
+                patched_code = patch_data.get('patched_code', '')
+                if patched_code:
+                    post_valid, post_error = self.patch_validator.validate_post_application(patched_code, target_file)
+                    if not post_valid:
+                        self.log_execution(execution_id, f"❌ Patch rejected: Post-validation failed - {post_error}")
+                        return False
+            
+            self.log_execution(execution_id, f"✅ Patch size validation passed: {total_changes} changes")
+            return True
+            
+        except Exception as e:
+            self.log_execution(execution_id, f"❌ Patch size validation error: {e}")
+            return False
+    
+    # ... keep existing code (chunked patch generation, save patch attempt methods)
     
     async def _generate_minimal_chunked_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
         """Generate minimal patch using chunking strategy for large files"""
@@ -224,55 +299,65 @@ class DeveloperAgent(BaseAgent):
                 chunk_num = chunk['chunk_id'] + 1
                 total_chunks = len(chunks)
                 
-                self.log_execution(execution_id, f"🔧 Processing chunk {chunk_num}/{total_chunks} with minimal approach")
+                self.log_execution(execution_id, f"🔧 Processing chunk {chunk_num}/{total_chunks} with surgical approach")
                 
                 # Use minimal change prompter for chunks
                 chunk_prompt = self.minimal_prompter.create_chunked_minimal_prompt(ticket, chunk, file_info)
                 
                 try:
                     response = await self.openai_client.complete_chat([
-                        {"role": "system", "content": "You are analyzing code chunks for minimal fixes. Only suggest changes if they're absolutely necessary and directly address the issue."},
+                        {"role": "system", "content": "You are analyzing code chunks for surgical fixes. Only suggest changes if they directly address the specific issue and are absolutely necessary."},
                         {"role": "user", "content": chunk_prompt}
-                    ], model="gpt-4.1-2025-04-14")
+                    ], model="gpt-4o-mini")
                     
                     chunk_data, error = self.json_handler.clean_and_parse_json(response)
                     
-                    if chunk_data and chunk_data.get('confidence_score', 0) > 0.3:
-                        chunk_patches.append(chunk_data)
-                        self.log_execution(execution_id, f"✅ Minimal chunk {chunk_num} processed")
+                    if chunk_data and chunk_data.get('confidence_score', 0) > 0.5:
+                        # Validate chunk patch size
+                        if self._validate_patch_size(chunk_data, execution_id):
+                            chunk_patches.append(chunk_data)
+                            self.log_execution(execution_id, f"✅ Surgical chunk {chunk_num} processed and validated")
+                        else:
+                            self.log_execution(execution_id, f"❌ Chunk {chunk_num} rejected for size")
                     else:
-                        self.log_execution(execution_id, f"⚠️ Chunk {chunk_num} had low confidence - no minimal changes")
+                        self.log_execution(execution_id, f"⚠️ Chunk {chunk_num} had low confidence - no surgical changes")
                         
                 except Exception as e:
-                    self.log_execution(execution_id, f"💥 Error processing minimal chunk {chunk_num}: {e}")
+                    self.log_execution(execution_id, f"💥 Error processing surgical chunk {chunk_num}: {e}")
                     continue
             
             if not chunk_patches:
-                self.log_execution(execution_id, f"❌ No minimal chunk patches for {file_info['path']}")
+                self.log_execution(execution_id, f"❌ No surgical chunk patches for {file_info['path']}")
                 return None
             
-            self.log_execution(execution_id, f"🔗 Combining {len(chunk_patches)} minimal chunk patches")
+            self.log_execution(execution_id, f"🔗 Combining {len(chunk_patches)} surgical chunk patches")
             combined_patch = await self.file_handler.combine_chunk_patches(chunk_patches, file_info, ticket)
             
             if combined_patch:
                 combined_patch.update({
-                    "processing_strategy": "minimal_chunked",
+                    "processing_strategy": "surgical_chunked",
                     "target_file": file_info["path"],
-                    "file_size": len(file_info["content"])
+                    "file_size": len(file_info["content"]),
+                    "base_file_hash": file_info["hash"]
                 })
                 
                 if "confidence_score" not in combined_patch:
                     avg_confidence = sum(p.get('confidence_score', 0) for p in chunk_patches) / len(chunk_patches)
                     combined_patch["confidence_score"] = avg_confidence
                 
-                self.log_execution(execution_id, f"✅ Successfully combined minimal chunk patches for {file_info['path']}")
-                return combined_patch
+                # Final size validation for combined patch
+                if self._validate_patch_size(combined_patch, execution_id):
+                    self.log_execution(execution_id, f"✅ Successfully combined and validated surgical chunk patches for {file_info['path']}")
+                    return combined_patch
+                else:
+                    self.log_execution(execution_id, f"❌ Combined patch rejected for size: {file_info['path']}")
+                    return None
             else:
-                self.log_execution(execution_id, f"❌ Failed to combine minimal chunk patches for {file_info['path']}")
+                self.log_execution(execution_id, f"❌ Failed to combine surgical chunk patches for {file_info['path']}")
                 return None
                 
         except Exception as e:
-            self.log_execution(execution_id, f"💥 Minimal chunked processing error for {file_info['path']}: {e}")
+            self.log_execution(execution_id, f"💥 Surgical chunked processing error for {file_info['path']}: {e}")
             return None
 
     async def _save_patch_attempt_safely(self, ticket: Ticket, execution_id: int, patch_data: Dict[str, Any]):
@@ -289,7 +374,7 @@ class DeveloperAgent(BaseAgent):
                 commit_message=patch_data.get("commit_message", ""),
                 confidence_score=patch_data.get("confidence_score", 0.0),
                 base_file_hash=patch_data.get("base_file_hash", ""),
-                patch_type=patch_data.get("patch_type", "minimal_unified_diff"),
+                patch_type=patch_data.get("patch_type", "surgical_unified_diff"),
                 test_results=json.dumps(patch_data.get("semantic_evaluation", {})),
                 success=True
             )
