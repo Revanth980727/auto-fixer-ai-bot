@@ -1,6 +1,6 @@
 
 from services.pipeline_validator import pipeline_validator
-from services.jira_client import JiraClient
+from services.jira_client import JIRAClient
 from services.github_client import GitHubClient
 from services.patch_service import PatchService
 from agents.planner_agent import PlannerAgent
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 class AgentOrchestrator:
     def __init__(self):
-        self.jira_client = JiraClient()
+        self.jira_client = JIRAClient()
         self.github_client = GitHubClient()
         self.patch_service = PatchService()
         self.planner_agent = PlannerAgent()
