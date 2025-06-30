@@ -1,3 +1,4 @@
+
 import re
 import hashlib
 from typing import Dict, Any, List, Optional, Tuple
@@ -120,48 +121,33 @@ class PatchService:
                 }
             }
         
-        # Apply patches sequentially with validation
-        modified_content = current_content
+        # CRITICAL FIX: Use patched_code directly instead of applying unified diff
+        # This avoids the malformed diff application issue
         successful_patches = []
         
         for patch in patches:
             try:
-                # Apply individual patch
-                patch_content = patch.get("patch_content", "")
-                logger.info(f"🔍 Applying patch to {file_path}:")
-                logger.info(f"   Patch content length: {len(patch_content)}")
-                logger.info(f"   Patch content preview: {patch_content[:200]}...")
+                # Get the patched code directly - this is the complete fixed file content
+                patched_code = patch.get("patched_code", "")
                 
-                # Validate patch content
-                if not patch_content or not patch_content.strip():
-                    logger.error(f"❌ Patch content is empty for {file_path}")
+                logger.info(f"🔍 Applying patch to {file_path}")
+                logger.info(f"   Patched code length: {len(patched_code)} characters")
+                logger.info(f"   Original code length: {len(current_content)} characters")
+                
+                # Validate patched content exists and is substantial
+                if not patched_code or not patched_code.strip():
+                    logger.error(f"❌ Patched code is empty for {file_path}")
                     return {
                         "success": False,
                         "patches": patches,
-                        "error": "Patch content is empty"
+                        "error": "Patched code is empty"
                     }
                 
-                if "---" not in patch_content or "+++" not in patch_content:
-                    logger.error(f"❌ Patch content is not in unified diff format for {file_path}")
-                    return {
-                        "success": False,
-                        "patches": patches,
-                        "error": "Patch content is not in unified diff format"
-                    }
-                
-                result = self._apply_unified_diff(modified_content, patch_content)
-                
-                if result["success"]:
-                    modified_content = result["content"]
-                    successful_patches.append(patch)
-                    logger.info(f"✅ Successfully applied patch to {file_path}")
-                else:
-                    logger.warning(f"❌ Failed to apply patch to {file_path}: {result['error']}")
-                    return {
-                        "success": False,
-                        "patches": patches,
-                        "error": result["error"]
-                    }
+                # Use the complete patched code as the new file content
+                # This bypasses the problematic unified diff application
+                modified_content = patched_code
+                successful_patches.append(patch)
+                logger.info(f"✅ Successfully applied patch to {file_path} using complete patched code")
                     
             except Exception as e:
                 logger.error(f"💥 Exception applying patch to {file_path}: {e}")
@@ -209,47 +195,9 @@ class PatchService:
         }
     
     def _apply_unified_diff(self, original_content: str, patch_content: str) -> Dict[str, Any]:
-        """Apply a unified diff patch to content"""
-        if not patch_content or not patch_content.strip():
-            return {"success": False, "error": "Empty patch content"}
-        
-        try:
-            # Parse the unified diff format
-            lines = original_content.splitlines(keepends=True)
-            patch_lines = patch_content.splitlines()
-            
-            # Simple unified diff parser
-            current_line = 0
-            modified_lines = lines.copy()
-            
-            for patch_line in patch_lines:
-                if patch_line.startswith('@@'):
-                    # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
-                    match = re.match(r'@@ -(\d+),?(\d+)? \+(\d+),?(\d+)? @@', patch_line)
-                    if match:
-                        old_start = int(match.group(1)) - 1  # Convert to 0-based indexing
-                        current_line = old_start
-                elif patch_line.startswith('-'):
-                    # Remove line
-                    if current_line < len(modified_lines):
-                        del modified_lines[current_line]
-                elif patch_line.startswith('+'):
-                    # Add line
-                    new_line = patch_line[1:] + '\n'
-                    modified_lines.insert(current_line, new_line)
-                    current_line += 1
-                elif patch_line.startswith(' '):
-                    # Context line - advance pointer
-                    current_line += 1
-            
-            return {
-                "success": True,
-                "content": ''.join(modified_lines)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error applying unified diff: {e}")
-            return {"success": False, "error": str(e)}
+        """Apply a unified diff patch to content - DEPRECATED, use patched_code directly"""
+        logger.warning("⚠️ _apply_unified_diff is deprecated - using patched_code directly instead")
+        return {"success": False, "error": "Method deprecated - use patched_code directly"}
     
     def _detect_version_conflicts(self, patches: List[Dict], current_content: str, current_hash: str) -> List[Dict]:
         """Detect if patches are based on different file versions"""
