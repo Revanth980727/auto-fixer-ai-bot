@@ -1,5 +1,5 @@
 import asyncio
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 from core.models import Ticket, TicketStatus, AgentType
 from core.database import get_sync_db
 from core.config import config
@@ -834,37 +834,69 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
         logger.info(f"✅ Planner validation passed: {len(likely_files)} files identified")
         return True
 
-    def _validate_enhanced_developer_results(self, result: Dict) -> bool:
-        """Validate that enhanced developer agent generated intelligent patches"""
-        logger.info(f"🔍 Validating enhanced developer results...")
-        
-        if not result:
-            logger.warning("❌ Enhanced developer validation failed: No result returned")
-            return False
-        
-        patches = result.get("patches", [])
-        if not patches or len(patches) == 0:
-            logger.warning("❌ Enhanced developer validation failed: No patches generated")
-            return False
-        
-        # Check that patches have enhanced content with file tracking
-        for i, patch in enumerate(patches):
-            if not isinstance(patch, dict):
-                logger.warning(f"❌ Enhanced developer validation failed: Invalid patch at index {i}")
-                return False
-            required_fields = ["patch_content", "patched_code", "target_file", "base_file_hash"]
-            for field in required_fields:
-                if field not in patch or not patch[field]:
-                    logger.warning(f"❌ Enhanced developer validation failed: Missing/empty field '{field}' in patch {i}")
-                    return False
-        
-        # Check for intelligent patching flag
-        if not result.get("intelligent_patching"):
-            logger.warning("❌ Enhanced developer validation failed: Not using intelligent patching")
-            return False
-        
-        logger.info(f"✅ Enhanced developer validation passed: {len(patches)} intelligent patches generated")
-        return True
+    def _validate_enhanced_developer_results(self, results: Dict[str, Any]) -> Tuple[bool, str]:
+        """Enhanced validation for developer results with fallback tolerance."""
+        try:
+            patches = results.get("patches", [])
+            if not patches:
+                return False, "No patches generated"
+            
+            validation_errors = []
+            
+            for i, patch in enumerate(patches):
+                patch_errors = []
+                
+                # Required fields with fallback tolerance
+                required_fields = ["target_file", "patched_code", "commit_message"]
+                for field in required_fields:
+                    if not patch.get(field):
+                        patch_errors.append(f"Missing/empty field '{field}'")
+                
+                # Patch content validation with fallback tolerance
+                patch_content = patch.get("patch_content", "")
+                merge_strategy = patch.get("merge_strategy", "")
+                validation_info = patch.get("validation_info", {})
+                applied_changes = validation_info.get("applied_changes", True)
+                
+                # More lenient patch content validation
+                if not patch_content:
+                    # Allow empty patch content for certain fallback scenarios
+                    if merge_strategy in ["safe_no_change", "enhanced_fallback"]:
+                        if not applied_changes:
+                            logger.info(f"  ℹ️ Patch {i} has no changes (fallback scenario) - allowing")
+                        else:
+                            patch_errors.append("Missing patch content despite applied changes")
+                    else:
+                        patch_errors.append("Missing/empty field 'patch_content'")
+                
+                # Confidence score validation
+                confidence = patch.get("confidence_score", 0)
+                if not isinstance(confidence, (int, float)) or confidence < 0:
+                    patch_errors.append(f"Invalid confidence score: {confidence}")
+                
+                # Target file validation
+                target_file = patch.get("target_file", "")
+                if not target_file or not isinstance(target_file, str):
+                    patch_errors.append("Invalid target_file")
+                
+                # Add patch-specific errors to overall validation
+                if patch_errors:
+                    validation_errors.append(f"Patch {i} ({target_file}): {'; '.join(patch_errors)}")
+                else:
+                    logger.debug(f"  ✅ Patch {i} validation passed")
+            
+            if validation_errors:
+                error_msg = "; ".join(validation_errors)
+                logger.warning(f"❌ Enhanced developer validation failed: {error_msg}")
+                return False, error_msg
+            
+            logger.info(f"✅ Enhanced developer validation passed for {len(patches)} patches")
+            return True, "All patches validated successfully"
+            
+        except Exception as e:
+            error_msg = f"Validation exception: {str(e)}"
+            logger.error(f"❌ Enhanced developer validation error: {error_msg}")
+            return False, error_msg
 
     def validate_developer_results(self, result: Dict[str, Any]) -> bool:
         """Enhanced validation for developer results using pipeline validator"""

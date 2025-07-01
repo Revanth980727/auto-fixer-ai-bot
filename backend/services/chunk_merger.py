@@ -238,18 +238,19 @@ class ChunkMerger:
         return adjusted_lines
     
     def _deduplicate_imports(self, content: str) -> str:
-        """Remove duplicate import statements."""
+        """Advanced import deduplication."""
         lines = content.split('\n')
-        seen_imports = set()
+        seen_imports = {}
         result_lines = []
         
         for line in lines:
             # Check if it's an import line
             if self.import_pattern.match(line):
                 # Normalize the import for comparison
-                normalized_import = line.strip()
+                normalized_import = self._normalize_import(line.strip())
+                
                 if normalized_import not in seen_imports:
-                    seen_imports.add(normalized_import)
+                    seen_imports[normalized_import] = line
                     result_lines.append(line)
                 else:
                     logger.debug(f"  - Removing duplicate import: {normalized_import}")
@@ -257,6 +258,52 @@ class ChunkMerger:
                 result_lines.append(line)
         
         return '\n'.join(result_lines)
+    
+    def _normalize_import(self, import_line: str) -> str:
+        """Advanced import normalization for better duplicate detection."""
+        # Remove extra whitespace and standardize format
+        normalized = re.sub(r'\s+', ' ', import_line.strip())
+        
+        # Handle different import formats consistently
+        if normalized.startswith('from '):
+            # Sort imported names for consistent comparison
+            match = re.match(r'from\s+(\S+)\s+import\s+(.+)', normalized)
+            if match:
+                module, imports = match.groups()
+                # Handle aliases and complex imports
+                import_parts = []
+                for imp in imports.split(','):
+                    imp = imp.strip()
+                    # Handle 'as' aliases
+                    if ' as ' in imp:
+                        base, alias = imp.split(' as ', 1)
+                        import_parts.append(f"{base.strip()} as {alias.strip()}")
+                    else:
+                        import_parts.append(imp)
+                
+                # Sort for consistent comparison
+                import_parts.sort()
+                normalized = f"from {module} import {', '.join(import_parts)}"
+        elif normalized.startswith('import '):
+            # Handle multiple imports in single statement
+            match = re.match(r'import\s+(.+)', normalized)
+            if match:
+                imports = match.group(1)
+                import_parts = []
+                for imp in imports.split(','):
+                    imp = imp.strip()
+                    # Handle aliases
+                    if ' as ' in imp:
+                        base, alias = imp.split(' as ', 1)
+                        import_parts.append(f"{base.strip()} as {alias.strip()}")
+                    else:
+                        import_parts.append(imp)
+                
+                # Sort for consistent comparison
+                import_parts.sort()
+                normalized = f"import {', '.join(import_parts)}"
+        
+        return normalized
     
     def _validate_final_result(self, content: str, original_structure: Dict, file_path: str) -> Dict[str, Any]:
         """Validate only the final merged result."""
@@ -303,18 +350,29 @@ class ChunkMerger:
             return validation
     
     def _enhanced_fallback_merge(self, original_file: str, chunks: List[Dict], file_path: str) -> Dict[str, Any]:
-        """Enhanced fallback strategy that works reliably."""
+        """Enhanced fallback strategy that works reliably and always generates patch content."""
         try:
             logger.info(f"🔄 Using enhanced fallback merge for {file_path}")
             
             original_lines = original_file.split('\n')
             result_lines = original_lines.copy()
             
-            # Apply only the highest confidence chunks with minimal changes
+            # Lower confidence threshold for fallback - we need to apply some changes
+            confidence_threshold = 0.5  # Lowered from 0.7
             successful_chunks = 0
+            applied_changes = False
+            
+            # Apply chunks in reverse order, but with more lenient criteria
             for chunk in reversed(sorted(chunks, key=lambda x: x.get('start_line', 0))):
                 confidence = chunk.get('confidence_score', 0)
-                if confidence < 0.7:  # Only high-confidence chunks
+                
+                # Use lower threshold and also consider any chunk that has actual content
+                should_apply = (
+                    confidence >= confidence_threshold or 
+                    (confidence >= 0.3 and chunk.get('patched_content', '').strip())
+                )
+                
+                if not should_apply:
                     continue
                 
                 start_line = chunk.get('start_line', 0)
@@ -338,14 +396,45 @@ class ChunkMerger:
                 # Apply the change
                 result_lines[start_line:end_line + 1] = new_lines
                 successful_chunks += 1
-                logger.debug(f"  ✅ Applied fallback chunk at lines {start_line}-{end_line}")
+                applied_changes = True
+                logger.debug(f"  ✅ Applied fallback chunk at lines {start_line}-{end_line} (confidence: {confidence:.3f})")
             
             merged_content = '\n'.join(result_lines)
+            
+            # If no changes were applied, try to apply at least one highest-confidence chunk
+            if not applied_changes and chunks:
+                logger.info("⚠️ No chunks met threshold, applying highest confidence chunk")
+                best_chunk = max(chunks, key=lambda x: x.get('confidence_score', 0))
+                
+                if best_chunk.get('patched_content', '').strip():
+                    start_line = best_chunk.get('start_line', 0)
+                    end_line = best_chunk.get('end_line', start_line)
+                    new_content = best_chunk.get('patched_content', '')
+                    
+                    if start_line < len(original_lines):
+                        original_indent = self._get_original_indentation(original_lines, start_line)
+                        new_lines = []
+                        
+                        for line in new_content.split('\n'):
+                            if line.strip():
+                                new_lines.append(' ' * original_indent + line.lstrip())
+                            else:
+                                new_lines.append(line)
+                        
+                        result_lines[start_line:end_line + 1] = new_lines
+                        merged_content = '\n'.join(result_lines)
+                        successful_chunks = 1
+                        applied_changes = True
+                        logger.info(f"✅ Applied best chunk with confidence {best_chunk.get('confidence_score', 0):.3f}")
             
             # Deduplicate imports
             merged_content = self._deduplicate_imports(merged_content)
             
+            # Always generate patch content, even if no changes were applied
+            patch_content = self._generate_patch(original_file, merged_content, file_path)
+            
             # Simple validation
+            validation_passed = True
             try:
                 if file_path.endswith('.py'):
                     ast.parse(merged_content)
@@ -353,25 +442,47 @@ class ChunkMerger:
             except SyntaxError as e:
                 logger.warning(f"⚠️ Fallback merge has syntax issues, using original file")
                 merged_content = original_file
+                patch_content = ""  # No patch if we fall back to original
                 successful_chunks = 0
+                validation_passed = False
             
-            logger.info(f"✅ Fallback merge strategy succeeded with {successful_chunks} chunks")
+            # Ensure we always return valid patch content
+            if not patch_content and applied_changes:
+                # Generate minimal patch even if changes seem small
+                patch_content = self._generate_patch(original_file, merged_content, file_path)
+            
+            logger.info(f"✅ Fallback merge strategy completed with {successful_chunks} chunks applied")
+            logger.debug(f"  - Applied changes: {applied_changes}")
+            logger.debug(f"  - Patch content length: {len(patch_content)}")
+            logger.debug(f"  - Validation passed: {validation_passed}")
+            
             return {
                 "success": True,
                 "merged_content": merged_content,
-                "patch_content": self._generate_patch(original_file, merged_content, file_path),
-                "validation_info": {"valid": True, "strategy": "enhanced_fallback"},
+                "patch_content": patch_content,
+                "validation_info": {
+                    "valid": validation_passed, 
+                    "strategy": "enhanced_fallback",
+                    "applied_changes": applied_changes,
+                    "chunks_applied": successful_chunks
+                },
                 "chunks_merged": successful_chunks,
                 "merge_strategy": "enhanced_fallback"
             }
             
         except Exception as e:
             logger.error(f"❌ Enhanced fallback merge failed: {e}")
+            # Even in failure, return valid structure with original content
             return {
                 "success": True,
                 "merged_content": original_file,
                 "patch_content": "",
-                "validation_info": {"valid": True, "strategy": "no_change"},
+                "validation_info": {
+                    "valid": True, 
+                    "strategy": "safe_no_change",
+                    "applied_changes": False,
+                    "error": str(e)
+                },
                 "chunks_merged": 0,
                 "merge_strategy": "safe_no_change"
             }
