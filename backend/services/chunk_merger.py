@@ -21,7 +21,7 @@ class ChunkMerger:
     def merge_chunks_intelligently(self, chunks: List[Dict[str, Any]], original_file: str, file_path: str) -> Dict[str, Any]:
         """Enhanced merge with improved boundary detection and reliable fallback."""
         try:
-            logger.info(f"🔗 Starting improved chunk merge for {file_path}")
+            logger.info(f"🔗 Starting enhanced chunk merge for {file_path}")
             logger.info(f"  - Original file size: {len(original_file)} chars")
             logger.info(f"  - Chunks to merge: {len(chunks)}")
             
@@ -32,20 +32,23 @@ class ChunkMerger:
             # Sort chunks by line number
             sorted_chunks = sorted(chunks, key=lambda x: x.get('start_line', 0))
             
-            # Validate boundaries and determine merge strategy
+            # Validate boundaries
             boundary_issues = self._validate_improved_boundaries(sorted_chunks, original_file)
             
-            # Choose merge strategy based on complexity
-            if len(boundary_issues) > 2 or len(chunks) > 8:
-                logger.info(f"🔄 Using enhanced fallback strategy due to complexity ({len(boundary_issues)} boundary issues)")
+            # Use enhanced fallback strategy for complex cases or when boundary issues exist
+            if len(boundary_issues) > 0 or len(chunks) > 8:
+                logger.info(f"🔄 Using enhanced fallback strategy ({len(boundary_issues)} boundary issues, {len(chunks)} chunks)")
                 return self._enhanced_fallback_merge(original_file, sorted_chunks, file_path)
             
-            # Try intelligent merge for simpler cases
-            merged_content = self._apply_chunks_conservatively(original_file, sorted_chunks, original_structure)
+            # Try simple merge for straightforward cases
+            merged_content = self._apply_chunks_safely(original_file, sorted_chunks)
             
             if not merged_content:
-                logger.warning("❌ Conservative merge failed - falling back to enhanced fallback")
+                logger.warning("❌ Safe merge failed - falling back to enhanced fallback")
                 return self._enhanced_fallback_merge(original_file, sorted_chunks, file_path)
+            
+            # Deduplicate imports
+            merged_content = self._deduplicate_imports(merged_content)
             
             # Final validation only at the end
             validation_result = self._validate_final_result(merged_content, original_structure, file_path)
@@ -58,14 +61,14 @@ class ChunkMerger:
             # Generate patch
             final_patch = self._generate_patch(original_file, merged_content, file_path)
             
-            logger.info(f"✅ Successfully merged {len(chunks)} chunks with improved strategy")
+            logger.info(f"✅ Successfully merged {len(chunks)} chunks")
             return {
                 "success": True,
                 "merged_content": merged_content,
                 "patch_content": final_patch,
                 "validation_info": validation_result,
                 "chunks_merged": len(chunks),
-                "merge_strategy": "improved_intelligent"
+                "merge_strategy": "safe_merge"
             }
             
         except Exception as e:
@@ -122,7 +125,7 @@ class ChunkMerger:
             
             # Check for problematic boundaries
             if start_line > 0 and start_line < len(lines):
-                prev_line = lines[start_line - 1].strip()
+                prev_line = lines[start_line - 1].strip() if start_line > 0 else ""
                 current_line = lines[start_line].strip() if start_line < len(lines) else ""
                 
                 # Check if we're starting after a block header
@@ -133,7 +136,7 @@ class ChunkMerger:
             
             # Check ending boundaries
             if end_line < len(lines) - 1:
-                current_line = lines[end_line].strip()
+                current_line = lines[end_line].strip() if end_line < len(lines) else ""
                 next_line = lines[end_line + 1].strip() if end_line + 1 < len(lines) else ""
                 
                 # Check if we're ending at a block header
@@ -141,19 +144,14 @@ class ChunkMerger:
                     issue = f"Chunk ends at block header at line {end_line}"
                     issues.append(issue)
                     logger.warning(f"⚠️ {issue}")
-                
-                # Check for multi-line statement splitting
-                if (current_line.endswith('\\') or 
-                    current_line.endswith(',') and not current_line.endswith('):') or
-                    '(' in current_line and ')' not in current_line):
-                    issue = f"Chunk may split multi-line statement at line {end_line}"
-                    issues.append(issue)
-                    logger.warning(f"⚠️ {issue}")
+        
+        if issues:
+            logger.warning("⚠️ Chunk boundaries may cause structural issues")
         
         return issues
     
-    def _apply_chunks_conservatively(self, original: str, chunks: List[Dict], structure: Dict) -> str:
-        """Apply chunks with conservative indentation preservation."""
+    def _apply_chunks_safely(self, original: str, chunks: List[Dict]) -> str:
+        """Apply chunks safely with minimal processing."""
         try:
             original_lines = original.split('\n')
             result_lines = original_lines.copy()
@@ -167,25 +165,25 @@ class ChunkMerger:
                 if not new_content:
                     continue
                 
-                logger.debug(f"  - Applying conservative chunk at lines {start_line}-{end_line}")
+                logger.debug(f"  - Applying safe chunk at lines {start_line}-{end_line}")
                 
                 # Get original indentation context
                 original_indent = self._get_original_indentation(original_lines, start_line)
                 
-                # Preserve indentation more conservatively
-                new_lines = self._preserve_original_indentation(
+                # Preserve indentation simply
+                new_lines = self._preserve_simple_indentation(
                     new_content.split('\n'), 
                     original_indent
                 )
                 
                 # Apply the replacement
                 result_lines[start_line:end_line + 1] = new_lines
-                logger.debug(f"  ✅ Conservative chunk applied at lines {start_line}-{end_line}")
+                logger.debug(f"  ✅ Safe chunk applied at lines {start_line}-{end_line}")
             
             return '\n'.join(result_lines)
             
         except Exception as e:
-            logger.error(f"❌ Error in conservative chunk application: {e}")
+            logger.error(f"❌ Error in safe chunk application: {e}")
             return ""
     
     def _get_original_indentation(self, original_lines: List[str], start_line: int) -> int:
@@ -199,15 +197,15 @@ class ChunkMerger:
             return len(indent_match.group(1)) if indent_match else 0
         
         # If the line is empty, look at surrounding context
-        for i in range(max(0, start_line - 3), min(len(original_lines), start_line + 3)):
+        for i in range(max(0, start_line - 2), min(len(original_lines), start_line + 2)):
             if original_lines[i].strip():
                 indent_match = self.indent_pattern.match(original_lines[i])
                 return len(indent_match.group(1)) if indent_match else 0
         
         return 0
     
-    def _preserve_original_indentation(self, new_lines: List[str], base_indent: int) -> List[str]:
-        """Preserve indentation by using the original file's indentation as base."""
+    def _preserve_simple_indentation(self, new_lines: List[str], base_indent: int) -> List[str]:
+        """Preserve indentation simply using the original file's indentation as base."""
         if not new_lines:
             return new_lines
         
@@ -239,6 +237,27 @@ class ChunkMerger:
         
         return adjusted_lines
     
+    def _deduplicate_imports(self, content: str) -> str:
+        """Remove duplicate import statements."""
+        lines = content.split('\n')
+        seen_imports = set()
+        result_lines = []
+        
+        for line in lines:
+            # Check if it's an import line
+            if self.import_pattern.match(line):
+                # Normalize the import for comparison
+                normalized_import = line.strip()
+                if normalized_import not in seen_imports:
+                    seen_imports.add(normalized_import)
+                    result_lines.append(line)
+                else:
+                    logger.debug(f"  - Removing duplicate import: {normalized_import}")
+            else:
+                result_lines.append(line)
+        
+        return '\n'.join(result_lines)
+    
     def _validate_final_result(self, content: str, original_structure: Dict, file_path: str) -> Dict[str, Any]:
         """Validate only the final merged result."""
         validation = {
@@ -253,6 +272,7 @@ class ChunkMerger:
                 try:
                     ast.parse(content)
                     validation["debug_info"]["syntax"] = "valid"
+                    logger.debug(f"✅ Syntax validation passed for {file_path}")
                 except SyntaxError as e:
                     validation["valid"] = False
                     validation["error"] = f"Syntax error at line {e.lineno}: {e.msg}"
@@ -262,6 +282,7 @@ class ChunkMerger:
                     if e.lineno and e.lineno <= len(lines):
                         validation["debug_info"]["problematic_line"] = lines[e.lineno - 1]
                         validation["debug_info"]["line_number"] = e.lineno
+                        logger.error(f"❌ Syntax error at line {e.lineno}: {lines[e.lineno - 1]}")
                     
                     return validation
             
@@ -278,6 +299,7 @@ class ChunkMerger:
         except Exception as e:
             validation["valid"] = False
             validation["error"] = f"Validation exception: {str(e)}"
+            logger.error(f"❌ Validation exception: {e}")
             return validation
     
     def _enhanced_fallback_merge(self, original_file: str, chunks: List[Dict], file_path: str) -> Dict[str, Any]:
@@ -316,18 +338,24 @@ class ChunkMerger:
                 # Apply the change
                 result_lines[start_line:end_line + 1] = new_lines
                 successful_chunks += 1
+                logger.debug(f"  ✅ Applied fallback chunk at lines {start_line}-{end_line}")
             
             merged_content = '\n'.join(result_lines)
+            
+            # Deduplicate imports
+            merged_content = self._deduplicate_imports(merged_content)
             
             # Simple validation
             try:
                 if file_path.endswith('.py'):
                     ast.parse(merged_content)
+                    logger.info(f"✅ Fallback merge validation passed")
             except SyntaxError as e:
                 logger.warning(f"⚠️ Fallback merge has syntax issues, using original file")
                 merged_content = original_file
                 successful_chunks = 0
             
+            logger.info(f"✅ Fallback merge strategy succeeded with {successful_chunks} chunks")
             return {
                 "success": True,
                 "merged_content": merged_content,

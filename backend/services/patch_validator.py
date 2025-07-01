@@ -128,7 +128,7 @@ class PatchValidator:
         return self._validate_javascript_syntax(content, file_path)
     
     def _detect_patch_artifacts(self, content: str) -> List[str]:
-        """Detect common patch application artifacts."""
+        """Detect common patch application artifacts with improved duplicate detection."""
         issues = []
         
         # Check for conflict markers
@@ -137,9 +137,10 @@ class PatchValidator:
             if marker in content:
                 issues.append(f"Conflict marker found: {marker}")
         
-        # Check for duplicate imports (common issue)
-        if content.count('import ') > len(set(re.findall(r'^import .*$', content, re.MULTILINE))):
-            issues.append("Duplicate import statements detected")
+        # Improved duplicate imports detection
+        import_issues = self._detect_duplicate_imports(content)
+        if import_issues:
+            issues.extend(import_issues)
         
         # Check for malformed diff headers in content
         if '--- a/' in content or '+++ b/' in content:
@@ -147,8 +148,55 @@ class PatchValidator:
         
         return issues
     
+    def _detect_duplicate_imports(self, content: str) -> List[str]:
+        """Detect duplicate import statements with more sophisticated logic."""
+        lines = content.split('\n')
+        import_statements = []
+        issues = []
+        
+        # Extract import statements
+        for line_num, line in enumerate(lines, 1):
+            stripped_line = line.strip()
+            if (stripped_line.startswith('import ') or 
+                stripped_line.startswith('from ') and ' import ' in stripped_line):
+                import_statements.append({
+                    'line': line_num,
+                    'content': stripped_line,
+                    'normalized': self._normalize_import(stripped_line)
+                })
+        
+        # Check for duplicates
+        seen_imports = set()
+        for import_stmt in import_statements:
+            normalized = import_stmt['normalized']
+            if normalized in seen_imports:
+                logger.debug(f"Duplicate import detected at line {import_stmt['line']}: {import_stmt['content']}")
+                issues.append("Duplicate import statements detected")
+                break
+            else:
+                seen_imports.add(normalized)
+        
+        return issues
+    
+    def _normalize_import(self, import_line: str) -> str:
+        """Normalize import statement for comparison."""
+        # Remove extra whitespace and standardize format
+        normalized = re.sub(r'\s+', ' ', import_line.strip())
+        
+        # Handle different import formats consistently
+        if normalized.startswith('from '):
+            # Sort imported names for consistent comparison
+            match = re.match(r'from\s+(\S+)\s+import\s+(.+)', normalized)
+            if match:
+                module, imports = match.groups()
+                # Sort individual imports
+                import_list = [imp.strip() for imp in imports.split(',')]
+                import_list.sort()
+                normalized = f"from {module} import {', '.join(import_list)}"
+        
+        return normalized
+    
     def _get_file_extension(self, file_path: str) -> str:
         """Get file extension from path."""
         parts = file_path.split('.')
         return f'.{parts[-1]}' if len(parts) > 1 else ''
-
