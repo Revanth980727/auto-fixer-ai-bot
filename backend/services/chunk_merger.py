@@ -25,6 +25,13 @@ class ChunkMerger:
             logger.info(f"  - Original file size: {len(original_file)} chars")
             logger.info(f"  - Chunks to merge: {len(chunks)}")
             
+            # Log chunk data for debugging
+            for i, chunk in enumerate(chunks):
+                confidence = chunk.get('confidence_score', 0)
+                logger.debug(f"  - Chunk {i}: confidence={confidence:.3f}, lines={chunk.get('start_line', 0)}-{chunk.get('end_line', 0)}")
+                if confidence == 0:
+                    logger.warning(f"⚠️ Chunk {i} has zero confidence - check data structure")
+            
             # Parse original file structure
             original_structure = self._analyze_structure(original_file)
             logger.info(f"  - Original structure: {original_structure['summary']}")
@@ -161,11 +168,12 @@ class ChunkMerger:
                 start_line = chunk.get('start_line', 0)
                 end_line = chunk.get('end_line', start_line)
                 new_content = chunk.get('patched_content', '')
+                confidence = chunk.get('confidence_score', 0)
                 
                 if not new_content:
                     continue
                 
-                logger.debug(f"  - Applying safe chunk at lines {start_line}-{end_line}")
+                logger.debug(f"  - Applying safe chunk at lines {start_line}-{end_line} (confidence: {confidence:.3f})")
                 
                 # Get original indentation context
                 original_indent = self._get_original_indentation(original_lines, start_line)
@@ -185,6 +193,8 @@ class ChunkMerger:
         except Exception as e:
             logger.error(f"❌ Error in safe chunk application: {e}")
             return ""
+    
+    # ... keep existing code (helper methods like _get_original_indentation, _preserve_simple_indentation, _deduplicate_imports, _normalize_import, _validate_final_result) the same ...
     
     def _get_original_indentation(self, original_lines: List[str], start_line: int) -> int:
         """Get the original indentation level at the start line."""
@@ -358,9 +368,15 @@ class ChunkMerger:
             result_lines = original_lines.copy()
             
             # Lower confidence threshold for fallback - we need to apply some changes
-            confidence_threshold = 0.5  # Lowered from 0.7
+            confidence_threshold = 0.3  # Lowered from 0.5 to be more permissive
             successful_chunks = 0
             applied_changes = False
+            
+            # Log confidence scores for debugging
+            logger.debug("🔍 Chunk confidence scores:")
+            for i, chunk in enumerate(chunks):
+                confidence = chunk.get('confidence_score', 0)
+                logger.debug(f"  - Chunk {i}: confidence={confidence:.3f}")
             
             # Apply chunks in reverse order, but with more lenient criteria
             for chunk in reversed(sorted(chunks, key=lambda x: x.get('start_line', 0))):
@@ -369,10 +385,11 @@ class ChunkMerger:
                 # Use lower threshold and also consider any chunk that has actual content
                 should_apply = (
                     confidence >= confidence_threshold or 
-                    (confidence >= 0.3 and chunk.get('patched_content', '').strip())
+                    (confidence > 0 and chunk.get('patched_content', '').strip())
                 )
                 
                 if not should_apply:
+                    logger.debug(f"  - Skipping chunk with confidence {confidence:.3f} (below threshold {confidence_threshold})")
                     continue
                 
                 start_line = chunk.get('start_line', 0)

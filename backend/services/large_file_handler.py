@@ -91,15 +91,28 @@ class LargeFileHandler:
         try:
             logger.info(f"🔗 Combining {len(chunk_patches)} chunk patches for {file_info['path']}")
             
-            # Prepare chunks for merging
+            # Log chunk patch data for debugging
+            for i, patch in enumerate(chunk_patches):
+                confidence = patch.get('confidence_score', 0)
+                logger.debug(f"  - Chunk {i}: confidence={confidence:.3f}, lines={patch.get('start_line', 0)}-{patch.get('end_line', 0)}")
+            
+            # Prepare chunks for merging - using consistent field names
             chunks_for_merge = []
             for patch in chunk_patches:
-                chunks_for_merge.append({
+                chunk_data = {
                     'start_line': patch.get('start_line', 0),
                     'end_line': patch.get('end_line', 0),
                     'patched_content': patch.get('patched_code', ''),
-                    'confidence': patch.get('confidence_score', 0)
-                })
+                    'confidence_score': patch.get('confidence_score', 0)  # Fixed: use consistent field name
+                }
+                chunks_for_merge.append(chunk_data)
+                
+                # Add validation warning for low confidence
+                if chunk_data['confidence_score'] == 0:
+                    logger.warning(f"⚠️ Chunk at lines {chunk_data['start_line']}-{chunk_data['end_line']} has zero confidence")
+            
+            # Log data structure before merging
+            logger.debug(f"🔍 Prepared {len(chunks_for_merge)} chunks for merging")
             
             # Use the chunk merger for intelligent combination
             merge_result = self.chunk_merger.merge_chunks_intelligently(
@@ -109,12 +122,12 @@ class LargeFileHandler:
             )
             
             if not merge_result["success"]:
-                logger.error(f"❌ Chunk merging failed: {merge_result['error']}")
+                logger.error(f"❌ Chunk merging failed: {merge_result.get('error', 'Unknown error')}")
                 return None
             
             # Calculate combined confidence
             total_confidence = sum(p.get('confidence_score', 0) for p in chunk_patches)
-            avg_confidence = total_confidence / len(chunk_patches)
+            avg_confidence = total_confidence / len(chunk_patches) if chunk_patches else 0
             
             # Create the final combined patch
             combined_patch = {
