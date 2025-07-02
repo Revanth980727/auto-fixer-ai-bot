@@ -43,36 +43,43 @@ class DiffPresenter:
         self.diff_cache: Dict[str, InteractiveDiff] = {}
         
     def create_interactive_diff(self, 
-                              patches: List[Dict[str, Any]], 
-                              patch_metadata: Dict[str, Any] = None) -> InteractiveDiff:
-        """Create an interactive diff from patches."""
+                              original_content: str, 
+                              patched_content: str, 
+                              file_path: str) -> Dict[str, Any]:
+        """Create a simple diff analysis from original and patched content."""
         try:
-            logger.info(f"🎨 Creating interactive diff for {len(patches)} patches")
+            logger.info(f"🎨 Creating diff analysis for {file_path}")
             
-            diff_id = self._generate_diff_id(patches)
-            file_diffs = []
+            # Generate hunks from content
+            hunks = self._generate_hunks(original_content, patched_content, file_path)
+            stats = self._calculate_diff_stats(hunks)
             
-            for patch in patches:
-                file_diff = self._create_file_diff(patch)
-                if file_diff:
-                    file_diffs.append(file_diff)
+            # Check if there are changes
+            has_changes = stats['changes'] > 0
             
-            summary = self._create_diff_summary(file_diffs)
-            approval_options = self._determine_approval_options(file_diffs, summary)
+            # Calculate quality score based on change size
+            quality_score = 1.0 if stats['changes'] <= 10 else max(0.3, 1.0 - (stats['changes'] / 100))
             
-            interactive_diff = InteractiveDiff(
-                diff_id=diff_id,
-                file_diffs=file_diffs,
-                summary=summary,
-                approval_options=approval_options,
-                metadata=patch_metadata or {}
-            )
+            # Calculate large hunks (hunks with more than 20 lines)
+            large_hunks = sum(1 for hunk in hunks if len(hunk.lines) > 20)
             
-            # Cache the diff
-            self.diff_cache[diff_id] = interactive_diff
+            analysis = {
+                "lines_added": stats['additions'],
+                "lines_removed": stats['deletions'],
+                "quality_score": quality_score,
+                "large_hunks": large_hunks
+            }
             
-            logger.info(f"✅ Interactive diff created: {diff_id}")
-            return interactive_diff
+            change_summary = f"{stats['additions']} additions, {stats['deletions']} deletions"
+            
+            return {
+                "success": True,
+                "has_changes": has_changes,
+                "analysis": analysis,
+                "change_summary": change_summary,
+                "hunks": hunks,
+                "stats": stats
+            }
             
         except Exception as e:
             logger.error(f"❌ Error creating interactive diff: {e}")
