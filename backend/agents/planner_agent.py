@@ -12,14 +12,17 @@ class PlannerAgent(BaseAgent):
         self.openai_client = OpenAIClient()
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Analyze ticket and create execution plan with repository context"""
-        self.log_execution(execution_id, "Analyzing ticket content and error traces with repository context")
+        """Analyze ticket and create execution plan with semantic search integration"""
+        self.log_execution(execution_id, "Analyzing ticket with semantic search and repository context")
         
         # Extract repository context
         error_trace_files = context.get("error_trace_files", []) if context else []
         discovered_files = context.get("discovered_files", []) if context else []
         
         self.log_execution(execution_id, f"Processing with {len(discovered_files)} discovered repository files")
+        
+        # Initialize semantic search for enhanced analysis
+        semantic_analysis = await self._perform_semantic_analysis(ticket, discovered_files)
         
         # Create enhanced analysis prompt with actual code context
         analysis_prompt = self._create_analysis_prompt(ticket, error_trace_files, discovered_files)
@@ -240,6 +243,47 @@ Focus on actual code issues you can see in the provided source files.
             "required_tests": [],
             "code_analysis": f"Repository-aware analysis of {len(discovered_files)} discovered files"
         }
+    
+    async def _perform_semantic_analysis(self, ticket: Ticket, discovered_files: list) -> Dict[str, Any]:
+        """Perform semantic analysis to find related code for error resolution."""
+        try:
+            from services.semantic_search_engine import SemanticSearchEngine
+            from services.symbol_resolver import SymbolResolver
+            
+            # Initialize semantic tools
+            semantic_engine = SemanticSearchEngine()
+            symbol_resolver = SymbolResolver()
+            
+            # Build semantic index from discovered files
+            await semantic_engine.build_semantic_index(discovered_files)
+            symbol_resolver.build_symbol_table(discovered_files)
+            
+            # Find code related to error
+            related_chunks = []
+            if ticket.error_trace:
+                related_chunks = await semantic_engine.find_related_to_error(
+                    ticket.description, ticket.error_trace
+                )
+            
+            # Extract function names from error and find definitions
+            symbol_definitions = []
+            if ticket.error_trace:
+                import re
+                function_matches = re.findall(r'in (\w+)', ticket.error_trace)
+                for func_name in function_matches[:3]:
+                    definition = symbol_resolver.go_to_definition("", 0, func_name)
+                    if definition:
+                        symbol_definitions.append(definition)
+            
+            return {
+                "related_chunks": related_chunks,
+                "symbol_definitions": symbol_definitions,
+                "semantic_search_enabled": True
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Semantic analysis failed: {e}")
+            return {"semantic_search_enabled": False, "error": str(e)}
 
     def _validate_context(self, context: Dict[str, Any]) -> bool:
         """Validate planner context"""

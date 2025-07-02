@@ -79,3 +79,32 @@ class WebSocketManager:
             "service": service,
             "state": state
         })
+    
+    async def broadcast_diff_preview(self, diff_id: str, diff_data: dict):
+        """Broadcast interactive diff preview for real-time review"""
+        await self.broadcast({
+            "type": "diff_preview",
+            "diff_id": diff_id,
+            "diff_data": diff_data,
+            "timestamp": diff_data.get("timestamp")
+        })
+    
+    async def broadcast_approval_request(self, diff_id: str, approval_data: dict):
+        """Broadcast approval request for user interaction"""
+        await self.broadcast({
+            "type": "approval_request",
+            "diff_id": diff_id,
+            "approval_options": approval_data.get("approval_options", []),
+            "summary": approval_data.get("summary", {}),
+            "requires_user_action": True
+        })
+    
+    async def broadcast_approval_result(self, diff_id: str, decision: str, result: dict):
+        """Broadcast approval decision result"""
+        await self.broadcast({
+            "type": "approval_result",
+            "diff_id": diff_id,
+            "decision": decision,
+            "result": result,
+            "timestamp": result.get("timestamp")
+        })

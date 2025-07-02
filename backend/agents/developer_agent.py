@@ -50,7 +50,7 @@ class DeveloperAgent(BaseAgent):
         
         self.log_execution(execution_id, f"📁 Processing {len(source_files)} files with minimal change strategy")
         
-        # Generate minimal patches with enhanced validation
+        # Generate minimal patches with validation orchestrator integration
         patches = []
         total_files = len(source_files)
         processing_stats = {
@@ -59,8 +59,13 @@ class DeveloperAgent(BaseAgent):
             "patches_rejected": 0,
             "patches_rejected_for_size": 0,
             "files_with_no_relevant_fixes": 0,
-            "truly_minimal_changes": 0
+            "truly_minimal_changes": 0,
+            "validation_rejections": 0
         }
+        
+        # Initialize validation orchestrator
+        from services.validation_orchestrator import ValidationOrchestrator
+        validator = ValidationOrchestrator()
         
         for i, file_info in enumerate(source_files, 1):
             self.log_execution(execution_id, f"🔧 Processing file {i}/{total_files}: {file_info['path']}")
@@ -82,8 +87,12 @@ class DeveloperAgent(BaseAgent):
                 )
                 
                 if patch_data:
-                    # Validate patch size before accepting
-                    if self._validate_patch_size(patch_data, execution_id):
+                    # Validate patch with validation orchestrator
+                    validation_passed = await self._validate_with_orchestrator(
+                        patch_data, file_info, validator, execution_id
+                    )
+                    
+                    if validation_passed and self._validate_patch_size(patch_data, execution_id):
                         patches.append(patch_data)
                         await self._save_patch_attempt_safely(ticket, execution_id, patch_data)
                         
@@ -96,6 +105,9 @@ class DeveloperAgent(BaseAgent):
                             processing_stats["truly_minimal_changes"] += 1
                         
                         self.log_execution(execution_id, f"✅ Accepted minimal patch for {file_info['path']} ({lines_modified} lines)")
+                    elif not validation_passed:
+                        processing_stats["validation_rejections"] += 1
+                        self.log_execution(execution_id, f"❌ Rejected patch for {file_info['path']} - validation failed")
                     else:
                         processing_stats["patches_rejected_for_size"] += 1
                         self.log_execution(execution_id, f"❌ Rejected patch for {file_info['path']} - too large")
@@ -383,6 +395,40 @@ Generate only valid JSON responses."""
         except Exception as e:
             self.log_execution(execution_id, f"💥 Intelligent chunked processing error for {file_info['path']}: {e}")
             return None
+    
+    async def _validate_with_orchestrator(self, patch_data: Dict[str, Any], file_info: Dict, 
+                                        validator, execution_id: int) -> bool:
+        """Validate patch using validation orchestrator."""
+        try:
+            original_content = file_info.get('content', '')
+            patched_content = patch_data.get('patched_code', '')
+            file_path = file_info.get('path', '')
+            
+            # Run comprehensive validation
+            validation_summary = await validator.validate_patch(
+                original_content=original_content,
+                patched_content=patched_content,
+                file_path=file_path,
+                patch_info=patch_data
+            )
+            
+            # Check validation results
+            if validation_summary.overall_success and validation_summary.overall_confidence > 0.6:
+                self.log_execution(execution_id, f"✅ Validation passed for {file_path} - confidence: {validation_summary.overall_confidence:.2f}")
+                # Store validation info in patch data
+                patch_data['validation_summary'] = {
+                    'confidence': validation_summary.overall_confidence,
+                    'recommendation': validation_summary.recommendation,
+                    'execution_time': validation_summary.total_execution_time
+                }
+                return True
+            else:
+                self.log_execution(execution_id, f"❌ Validation failed for {file_path} - {validation_summary.recommendation}")
+                return False
+                
+        except Exception as e:
+            self.log_execution(execution_id, f"❌ Validation orchestrator error: {e}")
+            return False  # Fail safely
     
     def _validate_chunk_patch(self, chunk_data: Dict[str, Any], chunk: Dict, execution_id: int) -> bool:
         """Enhanced validation for individual chunk patches."""

@@ -14,9 +14,13 @@ class SemanticPatcher:
         self.class_pattern = re.compile(r'^\s*class\s+(\w+)')
         self.import_pattern = re.compile(r'^\s*(from\s+\S+\s+)?import\s+')
         
-    def identify_target_nodes(self, content: str, issue_description: str) -> List[Dict[str, Any]]:
-        """Identify specific AST nodes that need fixes based on issue description."""
+    def identify_target_nodes(self, content: str, issue_description: str, max_file_size: int = 50000) -> List[Dict[str, Any]]:
+        """Identify specific AST nodes that need fixes with intelligent subdivision for large files."""
         try:
+            # Handle large files by intelligent AST subdivision
+            if len(content) > max_file_size:
+                return self._subdivide_large_file_by_ast(content, issue_description, max_file_size)
+            
             tree = ast.parse(content)
             lines = content.split('\n')
             targets = []
@@ -286,3 +290,65 @@ Focus on the minimal fix needed to resolve the issue."""
         ))
         
         return '\n'.join(diff_lines)
+    
+    def _subdivide_large_file_by_ast(self, content: str, issue_description: str, chunk_size: int) -> List[Dict[str, Any]]:
+        """Intelligently subdivide large files using AST boundaries."""
+        try:
+            tree = ast.parse(content)
+            lines = content.split('\n')
+            issue_keywords = self._extract_issue_keywords(issue_description)
+            
+            # Find top-level definitions
+            top_level_nodes = []
+            for node in tree.body:
+                if isinstance(node, (ast.FunctionDef, ast.ClassDef, ast.AsyncFunctionDef)):
+                    top_level_nodes.append(node)
+            
+            # Group nodes into semantic chunks
+            chunks = []
+            current_chunk_nodes = []
+            current_chunk_size = 0
+            
+            for node in top_level_nodes:
+                node_start = node.lineno - 1
+                node_end = getattr(node, 'end_lineno', node.lineno) - 1
+                node_content = '\n'.join(lines[node_start:node_end + 1])
+                node_size = len(node_content)
+                
+                if current_chunk_size + node_size > chunk_size and current_chunk_nodes:
+                    # Process current chunk
+                    chunk_targets = self._process_ast_chunk(current_chunk_nodes, lines, issue_keywords)
+                    chunks.extend(chunk_targets)
+                    
+                    # Start new chunk
+                    current_chunk_nodes = [node]
+                    current_chunk_size = node_size
+                else:
+                    current_chunk_nodes.append(node)
+                    current_chunk_size += node_size
+            
+            # Process final chunk
+            if current_chunk_nodes:
+                chunk_targets = self._process_ast_chunk(current_chunk_nodes, lines, issue_keywords)
+                chunks.extend(chunk_targets)
+            
+            # Sort by relevance
+            chunks.sort(key=lambda x: x.get('relevance_score', 0), reverse=True)
+            
+            logger.info(f"🔀 Subdivided large file into {len(chunks)} AST-based semantic targets")
+            return chunks[:10]  # Return top 10 for large files
+            
+        except Exception as e:
+            logger.error(f"❌ Error in AST subdivision: {e}")
+            return self._fallback_line_analysis(content, issue_description)
+    
+    def _process_ast_chunk(self, nodes: List[ast.AST], lines: List[str], issue_keywords: List[str]) -> List[Dict[str, Any]]:
+        """Process a chunk of AST nodes for relevance."""
+        targets = []
+        
+        for node in nodes:
+            target_info = self._analyze_node_relevance(node, lines, issue_keywords)
+            if target_info:
+                targets.append(target_info)
+        
+        return targets

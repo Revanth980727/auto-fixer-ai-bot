@@ -20,11 +20,14 @@ class CommunicatorAgent(BaseAgent):
         self.patch_service = PatchService()
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Apply patches and create comprehensive GitHub PR with JIRA integration"""
-        self.log_execution(execution_id, f"Starting enhanced communication with comprehensive JIRA-GitHub integration")
+        """Apply patches with interactive diff approval workflow"""
+        self.log_execution(execution_id, f"Starting enhanced communication with interactive diff approval")
         
         # Get successful patches
         successful_patches = self._get_successful_patches(ticket)
+        
+        # Create interactive diff for approval
+        diff_result = await self._create_interactive_diff_approval(ticket, successful_patches, execution_id)
         
         if not successful_patches:
             self.log_execution(execution_id, "No successful patches to deploy")
@@ -279,3 +282,62 @@ GitHub is not configured for this AI Agent System instance. The patches have bee
         """Validate communicator results"""
         required_fields = ["status", "actions_taken", "patches_deployed", "target_branch", "github_operations"]
         return all(field in result for field in required_fields)
+    
+    async def _create_interactive_diff_approval(self, ticket: Ticket, patches: list, execution_id: int) -> Dict[str, Any]:
+        """Create interactive diff and request user approval."""
+        try:
+            from services.diff_presenter import DiffPresenter
+            from core.websocket_manager import WebSocketManager
+            
+            # Initialize diff presenter
+            diff_presenter = DiffPresenter()
+            websocket_manager = WebSocketManager()
+            
+            # Prepare patch data for diff creation
+            patch_data_for_diff = []
+            for patch in patches:
+                patch_data_for_diff.append({
+                    'file_path': patch.target_file,
+                    'original_content': '',  # Would need to be retrieved
+                    'patched_content': patch.patched_code,
+                    'patch_content': patch.patch_content,
+                    'confidence_score': patch.confidence_score,
+                    'patch_type': 'ai_generated'
+                })
+            
+            # Create interactive diff
+            interactive_diff = diff_presenter.create_interactive_diff(
+                patch_data_for_diff,
+                patch_metadata={
+                    'ticket_id': ticket.id,
+                    'jira_id': ticket.jira_id,
+                    'title': ticket.title
+                }
+            )
+            
+            # Broadcast diff preview via WebSocket
+            await websocket_manager.broadcast_diff_preview(
+                interactive_diff.diff_id,
+                diff_presenter.get_diff_json(interactive_diff.diff_id)
+            )
+            
+            # Request approval
+            await websocket_manager.broadcast_approval_request(
+                interactive_diff.diff_id,
+                {
+                    'approval_options': interactive_diff.approval_options,
+                    'summary': interactive_diff.summary
+                }
+            )
+            
+            self.log_execution(execution_id, f"✅ Interactive diff created: {interactive_diff.diff_id}")
+            
+            return {
+                'diff_id': interactive_diff.diff_id,
+                'approval_requested': True,
+                'summary': interactive_diff.summary
+            }
+            
+        except Exception as e:
+            self.log_execution(execution_id, f"❌ Error creating interactive diff: {e}")
+            return {'error': str(e), 'approval_requested': False}

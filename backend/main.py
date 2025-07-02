@@ -7,7 +7,7 @@ import logging
 
 from core.database import init_db
 from core.websocket_manager import WebSocketManager
-from api.routes import tickets, metrics, agents, webhooks, logs, manual, developer_debug
+from api.routes import tickets, metrics, agents, webhooks, logs, manual, developer_debug, diff_approval
 from services.agent_orchestrator import AgentOrchestrator
 from services.ticket_poller import TicketPoller
 
@@ -83,6 +83,7 @@ app.include_router(webhooks.router, prefix="/api/webhooks", tags=["webhooks"])
 app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(manual.router, prefix="/api/manual", tags=["manual"])
 app.include_router(developer_debug.router, prefix="/api/developer-debug", tags=["developer-debug"])
+app.include_router(diff_approval.router, prefix="/api/diff-approval", tags=["diff-approval"])
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):

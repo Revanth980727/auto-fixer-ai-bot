@@ -89,76 +89,71 @@ class LargeFileHandler:
         return bool(re.match(r'^\s*def\s+\w+', line))
     
     async def combine_chunk_patches(self, chunk_patches: List[Dict[str, Any]], file_info: Dict, ticket: Any) -> Optional[Dict[str, Any]]:
-        """Combine chunk patches using semantic approach or intelligent merging."""
+        """Process using semantic approach only - chunk merging deprecated."""
         try:
-            # Try semantic approach first for suitable files
-            if self.semantic_handler.should_use_semantic_approach(file_info):
-                logger.info(f"🎯 Attempting semantic processing for {file_info['path']}")
-                semantic_result = await self.semantic_handler.process_file_semantically(file_info, ticket)
-                
-                if semantic_result:
-                    logger.info(f"✅ Semantic processing successful for {file_info['path']}")
-                    return semantic_result
-                else:
-                    logger.warning(f"⚠️ Semantic processing failed, falling back to chunk merging")
+            # Use semantic approach as the primary and only method
+            logger.info(f"🎯 Using semantic processing for {file_info['path']} (chunk merging deprecated)")
             
-            # Fall back to original chunk merging approach
-            logger.info(f"🔗 Combining {len(chunk_patches)} chunk patches for {file_info['path']}")
+            # Import semantic patcher for large file handling
+            from services.semantic_patcher import SemanticPatcher
+            semantic_patcher = SemanticPatcher()
             
-            # Log chunk patch data for debugging
-            for i, patch in enumerate(chunk_patches):
-                confidence = patch.get('confidence_score', 0)
-                logger.debug(f"  - Chunk {i}: confidence={confidence:.3f}, lines={patch.get('start_line', 0)}-{patch.get('end_line', 0)}")
-            
-            # Prepare chunks for merging - using consistent field names
-            chunks_for_merge = []
-            for patch in chunk_patches:
-                chunk_data = {
-                    'start_line': patch.get('start_line', 0),
-                    'end_line': patch.get('end_line', 0),
-                    'patched_content': patch.get('patched_code', ''),
-                    'confidence_score': patch.get('confidence_score', 0)  # Fixed: use consistent field name
-                }
-                chunks_for_merge.append(chunk_data)
-                
-                # Add validation warning for low confidence
-                if chunk_data['confidence_score'] == 0:
-                    logger.warning(f"⚠️ Chunk at lines {chunk_data['start_line']}-{chunk_data['end_line']} has zero confidence")
-            
-            # Log data structure before merging
-            logger.debug(f"🔍 Prepared {len(chunks_for_merge)} chunks for merging")
-            
-            # Use the chunk merger for intelligent combination
-            merge_result = self.chunk_merger.merge_chunks_intelligently(
-                chunks_for_merge, 
+            # Use semantic patcher with AST subdivision for large files
+            targets = semantic_patcher.identify_target_nodes(
                 file_info['content'], 
-                file_info['path']
+                ticket.description + " " + (ticket.error_trace or ""),
+                max_file_size=self.chunk_size
             )
             
-            if not merge_result["success"]:
-                logger.error(f"❌ Chunk merging failed: {merge_result.get('error', 'Unknown error')}")
+            if not targets:
+                logger.warning(f"⚠️ No semantic targets found for {file_info['path']}")
                 return None
             
-            # Calculate combined confidence
-            total_confidence = sum(p.get('confidence_score', 0) for p in chunk_patches)
-            avg_confidence = total_confidence / len(chunk_patches) if chunk_patches else 0
+            # Generate semantic patches for top targets
+            semantic_patches = []
+            for target in targets[:3]:  # Process top 3 targets
+                patch_info = semantic_patcher.generate_surgical_fix(
+                    target, 
+                    ticket.description, 
+                    file_info['path']
+                )
+                if patch_info:
+                    semantic_patches.append(patch_info)
             
-            # Create the final combined patch
-            combined_patch = {
-                'patch_content': merge_result['patch_content'],
-                'patched_code': merge_result['merged_content'],
-                'confidence_score': avg_confidence,
-                'commit_message': f"Apply {len(chunk_patches)} intelligent fixes to {file_info['path']}",
-                'explanation': f"Combined {len(chunk_patches)} chunk patches with structural validation",
-                'patch_type': 'intelligent_chunked_merge',
-                'chunks_merged': len(chunk_patches),
-                'validation_info': merge_result.get('validation_info', {}),
+            if not semantic_patches:
+                logger.warning(f"⚠️ No semantic patches generated for {file_info['path']}")
+                return None
+            
+            # Apply the best semantic patch
+            best_patch = max(semantic_patches, key=lambda x: x.get('confidence_score', 0))
+            
+            # Apply surgical patch
+            apply_result = semantic_patcher.apply_surgical_patch(
+                file_info['content'],
+                best_patch,
+                best_patch.get('original_content', '')
+            )
+            
+            if not apply_result.get('success'):
+                logger.error(f"❌ Semantic patch application failed: {apply_result.get('error')}")
+                return None
+            
+            # Create the final semantic patch result
+            semantic_result = {
+                'patch_content': apply_result['patch_diff'],
+                'patched_code': apply_result['patched_content'],
+                'confidence_score': best_patch.get('confidence_score', 0.8),
+                'commit_message': f"Semantic fix for {file_info['path']}",
+                'explanation': f"Applied semantic patch to {best_patch.get('target_name', 'target')}",
+                'patch_type': 'semantic_ast_based',
+                'targets_processed': len(targets),
+                'lines_changed': apply_result.get('lines_changed', 0),
                 'addresses_issue': True
             }
             
-            logger.info(f"✅ Successfully combined chunk patches with confidence {avg_confidence:.3f}")
-            return combined_patch
+            logger.info(f"✅ Semantic processing successful for {file_info['path']}")
+            return semantic_result
             
         except Exception as e:
-            logger.error(f"💥 Error combining chunk patches: {e}")
+            logger.error(f"❌ Error in semantic processing: {e}")
             return None
