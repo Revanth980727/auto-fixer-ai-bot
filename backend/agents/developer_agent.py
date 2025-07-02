@@ -4,10 +4,9 @@ from core.database import get_sync_db
 from services.openai_client import OpenAIClient
 from services.github_client import GitHubClient
 from services.json_response_handler import JSONResponseHandler
-from services.large_file_handler import LargeFileHandler
 from services.semantic_evaluator import SemanticEvaluator
 from services.semantic_patcher import SemanticPatcher
-from .developer_agent_helpers import create_semantic_patch_prompt, create_semantic_chunk_prompt
+from .developer_agent_helpers import create_semantic_patch_prompt
 from services.patch_validator import PatchValidator
 from typing import Dict, Any, Optional
 import json
@@ -23,11 +22,9 @@ class DeveloperAgent(BaseAgent):
         self.openai_client = OpenAIClient()
         self.github_client = GitHubClient()
         self.json_handler = JSONResponseHandler()
-        self.file_handler = LargeFileHandler()
         self.semantic_evaluator = SemanticEvaluator()
         self.semantic_patcher = SemanticPatcher()
         self.patch_validator = PatchValidator()
-        self.large_file_threshold = 12000  # Reduced threshold for better chunking
         self.max_hunk_size = 30  # Stricter size limit
     
     async def process(self, ticket: Ticket, execution_id: int, context: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -81,9 +78,9 @@ class DeveloperAgent(BaseAgent):
                 
                 self.log_execution(execution_id, f"⏱️ Setting timeout to {timeout}s for minimal changes")
                 
-                # Use minimal change patch generation with enhanced validation
+                # Use direct semantic processing - no chunking
                 patch_data = await asyncio.wait_for(
-                    self._generate_minimal_patch_with_validation(ticket, file_info, planner_data, execution_id),
+                    self._generate_semantic_patch(ticket, file_info, planner_data, execution_id),
                     timeout=timeout
                 )
                 
@@ -159,16 +156,11 @@ class DeveloperAgent(BaseAgent):
         self.log_execution(execution_id, f"🎉 COMPLETED: Generated {len(patches)} minimal patches")
         return result
     
-    async def _generate_minimal_patch_with_validation(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate minimal patch with size validation"""
+    async def _generate_semantic_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
+        """Generate semantic patch using AST-based targeting - no chunking logic"""
         file_size = len(file_info['content'])
-        
-        if file_size > self.large_file_threshold:
-            self.log_execution(execution_id, f"🧩 CHUNKED MINIMAL: {file_info['path']} ({file_size} chars)")
-            return await self._generate_minimal_chunked_patch(ticket, file_info, analysis, execution_id)
-        else:
-            self.log_execution(execution_id, f"📝 MINIMAL SINGLE FILE: {file_info['path']} ({file_size} chars)")
-            return await self._generate_minimal_single_patch(ticket, file_info, analysis, execution_id)
+        self.log_execution(execution_id, f"🎯 SEMANTIC PROCESSING: {file_info['path']} ({file_size} chars)")
+        return await self._generate_minimal_single_patch(ticket, file_info, analysis, execution_id)
     
     async def _generate_minimal_single_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
         """Generate minimal patch for a single file with strict size limits"""
@@ -306,101 +298,6 @@ Generate only valid JSON responses with minimal unified diffs."""
             self.log_execution(execution_id, f"❌ Patch size validation error: {e}")
             return False
     
-    async def _generate_minimal_chunked_patch(self, ticket: Ticket, file_info: Dict, analysis: Dict, execution_id: int) -> Dict[str, Any]:
-        """Generate minimal patch using AST-based semantic targeting - NO CHUNK MERGING."""
-        try:
-            self.log_execution(execution_id, f"🎯 Starting AST-based semantic processing for {file_info['path']}")
-            
-            # Use semantic patcher directly - no chunking/merging
-            targets = self.semantic_patcher.identify_target_nodes(
-                file_info['content'], 
-                f"{ticket.description} {ticket.error_trace or ''}"
-            )
-            
-            if not targets:
-                self.log_execution(execution_id, f"⚠️ No semantic targets found for {file_info['path']}")
-                return None
-            
-            self.log_execution(execution_id, f"🎯 Found {len(targets)} semantic targets for processing")
-            
-            # Process top target with OpenAI
-            best_target = targets[0]  # Use most relevant target
-            self.log_execution(execution_id, f"🔧 Processing top semantic target: {best_target['name']}")
-            
-            # Generate surgical patch for target
-            patch_prompt = create_semantic_patch_prompt(ticket, file_info, best_target)
-            
-            # Enhanced system prompt for surgical fixes
-            system_prompt = f"""You are an expert at making SURGICAL code fixes using AST-based targeting.
-
-TARGET: {best_target['node_type']} '{best_target['name']}' (lines {best_target['start_line']+1}-{best_target['end_line']+1})
-
-CRITICAL CONSTRAINTS:
-- Modify ONLY the target node and immediately related lines
-- Never modify more than {self.max_hunk_size} lines total
-- Preserve ALL existing imports, class definitions, and function signatures
-- Fix ONLY the specific error mentioned in the ticket
-- Generate complete patched_code for the entire file with minimal changes
-
-Generate only valid JSON responses with minimal unified diffs."""
-            
-            try:
-                response = await self.openai_client.complete_chat([
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": patch_prompt}
-                ], model="gpt-4o-mini")
-                
-                patch_data, error = self.json_handler.clean_and_parse_json(response)
-                
-                if patch_data is None:
-                    self.log_execution(execution_id, f"❌ JSON parsing failed for semantic target: {error}")
-                    return None
-                
-                # Validate patch JSON structure
-                is_valid, validation_error = self.json_handler.validate_patch_json(patch_data)
-                if not is_valid:
-                    self.log_execution(execution_id, f"❌ Semantic patch validation failed: {validation_error}")
-                    return None
-                
-                # Semantic evaluation
-                jira_context = {
-                    'title': ticket.title,
-                    'description': ticket.description,
-                    'error_trace': ticket.error_trace or ''
-                }
-                
-                evaluation = await self.semantic_evaluator.evaluate_patch_relevance(patch_data, jira_context)
-                should_accept, reason = self.semantic_evaluator.should_accept_patch(patch_data, evaluation)
-                
-                if not should_accept:
-                    self.log_execution(execution_id, f"❌ Semantic evaluation rejected patch: {reason}")
-                    return None
-                
-                # Add semantic metadata
-                patch_data.update({
-                    "target_file": file_info["path"],
-                    "file_size": len(file_info["content"]),
-                    "processing_strategy": "ast_semantic_targeting",
-                    "semantic_target": best_target['name'],
-                    "target_node_type": best_target['node_type'],
-                    "semantic_evaluation": evaluation,
-                    "selection_reason": reason,
-                    "base_file_hash": file_info["hash"]
-                })
-                
-                confidence = patch_data.get('confidence_score', 0)
-                relevance = evaluation.get('relevance_score', 0)
-                
-                self.log_execution(execution_id, f"✅ AST-based semantic patch generated (confidence: {confidence:.3f}, relevance: {relevance:.3f})")
-                return patch_data
-                
-            except Exception as e:
-                self.log_execution(execution_id, f"💥 Exception in semantic processing: {str(e)}")
-                return None
-                
-        except Exception as e:
-            self.log_execution(execution_id, f"💥 Intelligent chunked processing error for {file_info['path']}: {e}")
-            return None
     
     async def _validate_with_orchestrator(self, patch_data: Dict[str, Any], file_info: Dict, 
                                         validator, execution_id: int) -> bool:
@@ -436,83 +333,6 @@ Generate only valid JSON responses with minimal unified diffs."""
             self.log_execution(execution_id, f"❌ Validation orchestrator error: {e}")
             return False  # Fail safely
     
-    def _validate_chunk_patch(self, chunk_data: Dict[str, Any], chunk: Dict, execution_id: int) -> bool:
-        """Enhanced validation for individual chunk patches."""
-        try:
-            # Check for required fields
-            if not chunk_data.get('patched_code'):
-                self.log_execution(execution_id, f"❌ Chunk patch missing patched_code")
-                return False
-            
-            # Validate chunk patch size
-            patched_code = chunk_data.get('patched_code', '')
-            original_lines = chunk['content'].count('\n')
-            patched_lines = patched_code.count('\n')
-            
-            # Allow reasonable growth but prevent massive expansion
-            if patched_lines > original_lines * 2 and patched_lines > 100:
-                self.log_execution(execution_id, f"❌ Chunk patch too large: {patched_lines} lines vs {original_lines} original")
-                return False
-            
-            # Check for structural integrity
-            if not self._validate_chunk_structure(patched_code, chunk):
-                self.log_execution(execution_id, f"❌ Chunk patch failed structural validation")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            self.log_execution(execution_id, f"❌ Chunk patch validation error: {e}")
-            return False
-    
-    def _validate_chunk_structure(self, patched_code: str, chunk: Dict) -> bool:
-        """Validate that chunk structure is maintained."""
-        try:
-            original_lines = chunk['content'].split('\n')
-            patched_lines = patched_code.split('\n')
-            
-            # Check for major structural elements preservation
-            original_classes = len([l for l in original_lines if l.strip().startswith('class ')])
-            patched_classes = len([l for l in patched_lines if l.strip().startswith('class ')])
-            
-            original_functions = len([l for l in original_lines if l.strip().startswith('def ')])
-            patched_functions = len([l for l in patched_lines if l.strip().startswith('def ')])
-            
-            # Allow some flexibility but prevent major structural changes
-            if abs(original_classes - patched_classes) > 1 or abs(original_functions - patched_functions) > 2:
-                logger.warning(f"❌ Major structural changes detected in chunk")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Chunk structure validation error: {e}")
-            return False
-    
-    def _validate_combined_patch(self, combined_patch: Dict[str, Any], execution_id: int) -> bool:
-        """Final validation for combined patches."""
-        try:
-            # Check validation info from merger
-            validation_info = combined_patch.get('validation_info', {})
-            if not validation_info.get('valid', False):
-                self.log_execution(execution_id, f"❌ Combined patch failed merger validation: {validation_info.get('error', 'Unknown error')}")
-                return False
-            
-            # Additional patch size validation
-            if not self._validate_patch_size(combined_patch, execution_id):
-                return False
-            
-            # Check confidence threshold
-            confidence = combined_patch.get('confidence_score', 0)
-            if confidence < 0.4:
-                self.log_execution(execution_id, f"❌ Combined patch confidence too low: {confidence}")
-                return False
-            
-            return True
-            
-        except Exception as e:
-            self.log_execution(execution_id, f"❌ Combined patch validation error: {e}")
-            return False
     
     async def _save_patch_attempt_safely(self, ticket: Ticket, execution_id: int, patch_data: Dict[str, Any]):
         """Save patch attempt to database with proper error handling"""
