@@ -222,6 +222,13 @@ class AgentOrchestrator:
                 if not ticket:
                     logger.error(f"❌ Ticket {ticket_id} not found")
                     return
+                    
+            # Use comprehensive JIRA integration method for now
+            await self._process_ticket_with_comprehensive_jira_integration(ticket_id)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in semantic workflow for ticket {ticket_id}: {e}")
+            await self._handle_ticket_processing_error(ticket_id, e)
 
     async def _process_ticket_with_comprehensive_jira_integration(self, ticket_id: int):
         """Process ticket with complete JIRA status management and commenting"""
