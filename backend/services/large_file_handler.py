@@ -3,6 +3,7 @@ import json
 import re
 from typing import Dict, Any, List, Optional, Tuple
 from services.chunk_merger import ChunkMerger
+from services.semantic_file_handler import SemanticFileHandler
 import logging
 
 logger = logging.getLogger(__name__)
@@ -14,6 +15,7 @@ class LargeFileHandler:
         self.chunk_size = 3000  # Reduced for better context
         self.overlap_size = 200  # Overlap between chunks
         self.chunk_merger = ChunkMerger()
+        self.semantic_handler = SemanticFileHandler()
     
     def create_file_chunks(self, content: str, file_path: str) -> List[Dict[str, Any]]:
         """Create overlapping chunks that preserve code structure."""
@@ -87,8 +89,20 @@ class LargeFileHandler:
         return bool(re.match(r'^\s*def\s+\w+', line))
     
     async def combine_chunk_patches(self, chunk_patches: List[Dict[str, Any]], file_info: Dict, ticket: Any) -> Optional[Dict[str, Any]]:
-        """Combine chunk patches using intelligent merging with global validation."""
+        """Combine chunk patches using semantic approach or intelligent merging."""
         try:
+            # Try semantic approach first for suitable files
+            if self.semantic_handler.should_use_semantic_approach(file_info):
+                logger.info(f"🎯 Attempting semantic processing for {file_info['path']}")
+                semantic_result = await self.semantic_handler.process_file_semantically(file_info, ticket)
+                
+                if semantic_result:
+                    logger.info(f"✅ Semantic processing successful for {file_info['path']}")
+                    return semantic_result
+                else:
+                    logger.warning(f"⚠️ Semantic processing failed, falling back to chunk merging")
+            
+            # Fall back to original chunk merging approach
             logger.info(f"🔗 Combining {len(chunk_patches)} chunk patches for {file_info['path']}")
             
             # Log chunk patch data for debugging
