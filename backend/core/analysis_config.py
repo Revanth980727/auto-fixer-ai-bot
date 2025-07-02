@@ -32,9 +32,15 @@ class ModelConfig:
         self.analysis_model = os.getenv("OPENAI_ANALYSIS_MODEL", "gpt-4o-mini")
         self.patch_generation_model = os.getenv("OPENAI_PATCH_MODEL", "gpt-4o")
         
-        # Token Limits
-        self.max_tokens_patch = int(os.getenv("OPENAI_MAX_TOKENS_PATCH", "3000"))
+        # Token Limits - Increased for better JSON response handling
+        self.max_tokens_patch = int(os.getenv("OPENAI_MAX_TOKENS_PATCH", "8000"))
         self.max_tokens_analysis = int(os.getenv("OPENAI_MAX_TOKENS_ANALYSIS", "2000"))
+        self.max_tokens_large_patch = int(os.getenv("OPENAI_MAX_TOKENS_LARGE_PATCH", "12000"))
+        
+        # Dynamic token limits based on file size
+        self.tokens_per_1k_chars = int(os.getenv("TOKENS_PER_1K_CHARS", "250"))
+        self.min_patch_tokens = int(os.getenv("MIN_PATCH_TOKENS", "2000"))
+        self.max_patch_tokens = int(os.getenv("MAX_PATCH_TOKENS", "16000"))
         
         # Model Parameters
         self.temperature = float(os.getenv("OPENAI_TEMPERATURE", "0.1"))

@@ -197,18 +197,29 @@ FORBIDDEN ACTIONS:
 - Modifying unrelated code sections
 - Creating wholesale replacements
 
+RESPONSE FORMAT REQUIREMENTS:
+- Return ONLY valid JSON, no markdown formatting or explanations
+- Use MINIMAL patch_content (unified diff format, only changed lines)
+- Keep patched_code brief - show only the modified section, not entire files
+- NEVER include full file content in responses
+- Focus on the specific lines that need to change
+
 JSON RESPONSE REQUIREMENTS:
 You MUST respond with ONLY a valid JSON object containing these exact fields:
 {{
-  "patch_content": "unified diff format patch",
-  "patched_code": "complete fixed file content", 
-  "explanation": "brief explanation of the fix",
+  "patch_content": "unified diff format patch - MINIMAL, only changed lines",
+  "patched_code": "ONLY the modified section/function, NOT the entire file", 
+  "explanation": "one sentence explanation of the fix",
   "confidence_score": 0.95,
   "lines_modified": 1,
-  "commit_message": "brief commit message"
+  "commit_message": "fix: brief commit message"
 }}
 
-Do not include any text before or after the JSON. The JSON must be valid and parseable."""
+CRITICAL: 
+- patched_code should contain ONLY the modified function/class/section, NOT the entire file
+- patch_content should be a minimal unified diff showing only what changed
+- Keep responses under 2000 characters total
+- Do not include any text before or after the JSON. The JSON must be valid and parseable."""
             
             self.log_execution(execution_id, f"🤖 Sending surgical change request for {file_info['path']}")
             

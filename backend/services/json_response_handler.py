@@ -55,7 +55,19 @@ class JSONResponseHandler:
             logger.warning(f"❌ JSON fixes parsing failed: {e}")
             logger.info(f"🔍 FIXED RESPONSE (first 500 chars): {repr(fixed[:500])}")
         
-        # Strategy 4: Extract JSON from mixed content
+        # Strategy 4: Check for truncation and attempt recovery
+        if JSONResponseHandler._detect_truncation(fixed):
+            logger.info("🔧 Detected truncation, attempting recovery...")
+            recovered = JSONResponseHandler._attempt_truncation_recovery(fixed)
+            if recovered:
+                try:
+                    result = json.loads(recovered)
+                    logger.info("✅ Truncation recovery parsing successful")
+                    return result, ""
+                except json.JSONDecodeError as e:
+                    logger.warning(f"❌ Truncation recovery parsing failed: {e}")
+        
+        # Strategy 5: Extract JSON from mixed content
         extracted = JSONResponseHandler._extract_json_from_text(response)
         if extracted:
             logger.info(f"🎯 Extracted JSON from text ({len(extracted)} chars)")
@@ -67,7 +79,7 @@ class JSONResponseHandler:
                 logger.warning(f"❌ JSON extraction parsing failed: {e}")
                 logger.info(f"🔍 EXTRACTED JSON: {repr(extracted)}")
         
-        # Strategy 5: Try to build minimal valid JSON from response
+        # Strategy 6: Try to build minimal valid JSON from response
         minimal_json = JSONResponseHandler._create_minimal_json(response)
         if minimal_json:
             logger.info("🔨 Created minimal JSON from response")
@@ -125,6 +137,59 @@ class JSONResponseHandler:
             return max(matches, key=len)
         
         return None
+    
+    @staticmethod
+    def _detect_truncation(text: str) -> bool:
+        """Detect if the response appears to be truncated"""
+        text = text.strip()
+        
+        # Check for incomplete JSON structure
+        if not text.endswith('}'):
+            return True
+        
+        # Check for incomplete string values
+        if text.endswith('",') or text.endswith('"\\'):
+            return True
+        
+        # Check for truncation indicators
+        truncation_patterns = [
+            r'\.\.\."\s*$',  # Ends with ..."
+            r'\\n[^"]*$',    # Ends with incomplete escape sequence
+            r'"[^"]*$',      # Ends with unclosed quote
+            r'\\$'           # Ends with lone backslash
+        ]
+        
+        import re
+        for pattern in truncation_patterns:
+            if re.search(pattern, text):
+                return True
+        
+        return False
+    
+    @staticmethod
+    def _attempt_truncation_recovery(text: str) -> Optional[str]:
+        """Attempt to recover a truncated JSON response"""
+        text = text.strip()
+        
+        # Try to close incomplete strings
+        if text.endswith('"\\'):
+            text = text[:-2] + '"'
+        elif text.endswith('",'):
+            text = text[:-1]
+        elif not text.endswith('"') and text.rfind('"') > text.rfind('}'):
+            # Find last unclosed quote and close it
+            last_quote = text.rfind('"')
+            text = text[:last_quote+1] + '"'
+        
+        # Try to close incomplete JSON objects
+        if not text.endswith('}'):
+            # Count braces to determine how many to add
+            open_braces = text.count('{')
+            close_braces = text.count('}')
+            missing_braces = open_braces - close_braces
+            text += '}' * missing_braces
+        
+        return text
     
     @staticmethod
     def _create_minimal_json(text: str) -> Optional[str]:

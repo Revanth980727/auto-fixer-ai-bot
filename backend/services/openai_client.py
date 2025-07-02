@@ -38,7 +38,7 @@ class OpenAIClient:
             return False
         return True
     
-    async def complete_chat(self, messages: List[Dict[str, str]], model: str = None, max_retries: int = None, force_json: bool = False) -> str:
+    async def complete_chat(self, messages: List[Dict[str, str]], model: str = None, max_retries: int = None, force_json: bool = False, file_size: int = 0) -> str:
         """Complete a chat conversation with enhanced timeout and monitoring"""
         if not self.client:
             raise RuntimeError("OpenAI client not initialized. Check API key and dependencies.")
@@ -52,6 +52,9 @@ class OpenAIClient:
             model = model_config.default_model
         if max_retries is None:
             max_retries = api_config.openai_max_retries
+        
+        # Calculate dynamic token limits based on file size
+        max_tokens = self._calculate_dynamic_token_limit(file_size, force_json)
         
         # Reduce timeout for patch generation to detect hangs faster
         timeout = 120.0 if "patch" in str(messages).lower() else api_config.openai_request_timeout
@@ -71,11 +74,11 @@ class OpenAIClient:
                 heartbeat_task = asyncio.create_task(heartbeat())
                 
                 try:
-                    # Prepare completion parameters
+                    # Prepare completion parameters with dynamic token limits
                     completion_params = {
                         "model": model,
                         "messages": messages,
-                        "max_tokens": model_config.max_tokens_patch,
+                        "max_tokens": max_tokens,
                         "temperature": model_config.temperature
                     }
                     
@@ -103,7 +106,15 @@ class OpenAIClient:
                         if not raw_content.strip().endswith('}'):
                             logger.warning("⚠️ Response doesn't end with JSON object")
                     
-                    logger.info(f"✅ OpenAI request successful on attempt {attempt + 1}")
+                    # Validate response size and completeness
+                    if force_json and not self._validate_json_response(raw_content):
+                        logger.warning("⚠️ JSON response appears truncated or incomplete")
+                        if attempt < max_retries - 1:
+                            logger.info("🔄 Retrying with larger token limit...")
+                            max_tokens = min(max_tokens * 1.5, model_config.max_patch_tokens)
+                            continue
+                    
+                    logger.info(f"✅ OpenAI request successful on attempt {attempt + 1} (tokens: {max_tokens})")
                     return raw_content
                     
                 except asyncio.CancelledError:
@@ -121,6 +132,63 @@ class OpenAIClient:
                 if attempt == max_retries - 1:
                     raise e
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
+    
+    def _calculate_dynamic_token_limit(self, file_size: int, force_json: bool) -> int:
+        """Calculate dynamic token limit based on file size and request type"""
+        if file_size == 0:
+            return model_config.max_tokens_patch
+        
+        # Estimate tokens needed based on file size
+        estimated_tokens = max(
+            model_config.min_patch_tokens,
+            (file_size // 1000) * model_config.tokens_per_1k_chars
+        )
+        
+        # Cap at maximum limit
+        max_allowed = model_config.max_patch_tokens if force_json else model_config.max_tokens_patch
+        calculated_limit = min(estimated_tokens, max_allowed)
+        
+        logger.info(f"📊 Dynamic token limit: {calculated_limit} (file size: {file_size}, force_json: {force_json})")
+        return calculated_limit
+    
+    def _validate_json_response(self, response: str) -> bool:
+        """Validate if JSON response appears complete and well-formed"""
+        if not response or not response.strip():
+            return False
+        
+        response = response.strip()
+        
+        # Check basic JSON structure
+        if not response.startswith('{') or not response.endswith('}'):
+            logger.warning("❌ Response doesn't have proper JSON brackets")
+            return False
+        
+        # Check for truncation indicators
+        truncation_indicators = [
+            '..."',  # Truncated string
+            '...}',  # Truncated object
+            'cut off',
+            'truncated',
+            'incomplete'
+        ]
+        
+        for indicator in truncation_indicators:
+            if indicator.lower() in response.lower():
+                logger.warning(f"❌ Found truncation indicator: {indicator}")
+                return False
+        
+        # Check if response ends mid-sentence/field
+        if response.endswith('",') or response.endswith('"\\'):
+            logger.warning("❌ Response appears to end mid-field")
+            return False
+        
+        # Check for balanced quotes (simplified check)
+        quote_count = response.count('"')
+        if quote_count % 2 != 0:
+            logger.warning(f"❌ Unbalanced quotes detected: {quote_count}")
+            return False
+        
+        return True
     
     async def analyze_code_error(self, error_trace: str, code_context: str = "") -> str:
         """Analyze code error with enhanced timeout handling"""
@@ -177,7 +245,9 @@ class OpenAIClient:
             return await self.complete_chat(
                 messages, 
                 model=model_config.patch_generation_model, 
-                max_retries=2
+                max_retries=2,
+                force_json=True,
+                file_size=len(file_content)
             )
         except Exception as e:
             logger.error(f"Error in generate_code_patch: {e}")

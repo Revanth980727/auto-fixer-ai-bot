@@ -50,6 +50,9 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
           
           // Handle different message types
           switch (data.type) {
+            case 'pong':
+              console.log('Received pong, connection healthy');
+              break;
             case 'ticket_update':
               toast({
                 title: "Ticket Updated",
