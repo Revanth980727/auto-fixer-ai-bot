@@ -93,7 +93,15 @@ class OpenAIClient:
                     # Log raw response for debugging
                     raw_content = response.choices[0].message.content
                     if force_json:
-                        logger.info(f"📝 Raw OpenAI JSON response (first 500 chars): {raw_content[:500]}")
+                        logger.info(f"📝 FULL RAW OpenAI JSON response: {repr(raw_content)}")
+                        logger.info(f"📊 Response stats - Length: {len(raw_content)}, Lines: {raw_content.count('newline')}")
+                        # Check for common issues
+                        if raw_content.startswith('```'):
+                            logger.warning("⚠️ Response starts with markdown code blocks")
+                        if not raw_content.strip().startswith('{'):
+                            logger.warning("⚠️ Response doesn't start with JSON object")
+                        if not raw_content.strip().endswith('}'):
+                            logger.warning("⚠️ Response doesn't end with JSON object")
                     
                     logger.info(f"✅ OpenAI request successful on attempt {attempt + 1}")
                     return raw_content

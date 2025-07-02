@@ -18,6 +18,12 @@ class JSONResponseHandler:
         
         logger.info(f"🔍 Attempting to parse JSON response ({len(response)} chars)")
         
+        # DEBUG: Log first 1000 characters of raw response
+        logger.info(f"📝 RAW RESPONSE (first 1000 chars): {repr(response[:1000])}")
+        
+        # DEBUG: Log last 500 characters to see how response ends
+        logger.info(f"📝 RAW RESPONSE (last 500 chars): {repr(response[-500:])}")
+        
         # Strategy 1: Try direct parsing
         try:
             result = json.loads(response.strip())
@@ -25,6 +31,7 @@ class JSONResponseHandler:
             return result, ""
         except json.JSONDecodeError as e:
             logger.warning(f"❌ Direct parsing failed: {e}")
+            logger.info(f"🔍 PARSE ERROR at position {e.pos}: {repr(response[max(0, e.pos-50):e.pos+50])}")
         
         # Strategy 2: Clean common markdown formatting
         cleaned = JSONResponseHandler._clean_markdown_formatting(response)
@@ -35,6 +42,7 @@ class JSONResponseHandler:
             return result, ""
         except json.JSONDecodeError as e:
             logger.warning(f"❌ Markdown cleanup parsing failed: {e}")
+            logger.info(f"🔍 CLEANED RESPONSE (first 500 chars): {repr(cleaned[:500])}")
         
         # Strategy 3: Fix common JSON issues
         fixed = JSONResponseHandler._fix_common_json_issues(cleaned)
@@ -45,6 +53,7 @@ class JSONResponseHandler:
             return result, ""
         except json.JSONDecodeError as e:
             logger.warning(f"❌ JSON fixes parsing failed: {e}")
+            logger.info(f"🔍 FIXED RESPONSE (first 500 chars): {repr(fixed[:500])}")
         
         # Strategy 4: Extract JSON from mixed content
         extracted = JSONResponseHandler._extract_json_from_text(response)
@@ -56,6 +65,7 @@ class JSONResponseHandler:
                 return result, ""
             except json.JSONDecodeError as e:
                 logger.warning(f"❌ JSON extraction parsing failed: {e}")
+                logger.info(f"🔍 EXTRACTED JSON: {repr(extracted)}")
         
         # Strategy 5: Try to build minimal valid JSON from response
         minimal_json = JSONResponseHandler._create_minimal_json(response)
