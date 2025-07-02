@@ -5,8 +5,11 @@ from typing import Dict, Any, List, Optional, Tuple
 from services.github_client import GitHubClient
 from services.diff_presenter import DiffPresenter
 from services.patch_validator import PatchValidator
+from services.shadow_workspace_manager import ShadowWorkspaceManager
+from core.websocket_manager import WebSocketManager
 from core.config import config
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -20,7 +23,10 @@ class PatchService:
         self.target_branch = config.github_target_branch
         self.diff_presenter = DiffPresenter()
         self.validator = PatchValidator()
+        self.shadow_manager = ShadowWorkspaceManager()
+        self.websocket_manager = WebSocketManager()
         self.max_safe_hunk_size = 50  # Reject patches with hunks larger than this
+        self.approval_cache = {}  # Cache for approval decisions
     
     async def apply_patches_intelligently(self, patches: List[Dict[str, Any]], ticket_id: int) -> Dict[str, Any]:
         """Apply patches with surgical precision and enhanced validation"""
@@ -148,8 +154,8 @@ class PatchService:
             return False
     
     async def _apply_file_patches_surgically(self, file_path: str, patches: List[Dict], branch_name: str) -> Dict[str, Any]:
-        """Apply patches using surgical precision with enhanced validation"""
-        logger.info(f"🔧 Applying {len(patches)} surgical patches to {file_path}")
+        """Apply patches using shadow workspace validation and interactive approval flow"""
+        logger.info(f"🔧 Starting shadow workspace validation for {file_path}")
         
         # Get current file content
         current_content = await self.github_client.get_file_content(file_path, branch_name)
@@ -161,18 +167,7 @@ class PatchService:
                 "error": f"File {file_path} not found"
             }
         
-        # Pre-validate all patches
-        for patch in patches:
-            is_valid, error = self.validator.validate_pre_application(patch)
-            if not is_valid:
-                logger.error(f"❌ Pre-validation failed for {file_path}: {error}")
-                return {
-                    "success": False,
-                    "patches": patches,
-                    "error": f"Pre-validation failed: {error}"
-                }
-        
-        # Apply patches using patched_code with surgical validation
+        # Process all patches and validate in shadow workspace
         successful_patches = []
         final_content = current_content
         
@@ -182,101 +177,90 @@ class PatchService:
                 patched_code = patch.get("patched_code", "")
                 if not patched_code:
                     logger.error(f"❌ No patched_code provided for {file_path}")
-                    return {
-                        "success": False,
-                        "patches": patches,
-                        "error": "No patched_code provided"
-                    }
-                
-                # Generate diff for analysis using diff presenter
-                diff_result = self.diff_presenter.create_interactive_diff(
-                    final_content, patched_code, file_path
-                )
-                
-                if not diff_result["success"]:
-                    logger.error(f"❌ Diff generation failed for {file_path}")
-                    return {
-                        "success": False,
-                        "patches": patches,
-                        "error": f"Diff generation failed: {diff_result.get('error')}"
-                    }
-                
-                if not diff_result["has_changes"]:
-                    logger.info(f"⚠️ No changes detected for {file_path}")
                     continue
                 
-                # Enhanced surgical validation
-                analysis = diff_result.get("analysis", {})
-                if not self._validate_surgical_quality(analysis, file_path):
-                    logger.error(f"❌ Surgical quality validation failed for {file_path}")
-                    return {
-                        "success": False,
-                        "patches": patches,
-                        "error": "Surgical quality validation failed - changes too large or unsafe"
-                    }
+                # Create shadow workspace for validation
+                workspace_id = await self.shadow_manager.create_shadow_workspace(
+                    file_path, final_content, patched_code
+                )
+                logger.info(f"🏗️ Created shadow workspace: {workspace_id}")
                 
-                # Log diff analysis with enhanced details
-                logger.info(f"📊 Surgical diff analysis for {file_path}:")
-                logger.info(f"  - {diff_result.get('change_summary', 'No summary')}")
-                logger.info(f"  - Quality score: {analysis.get('quality_score', 'N/A')}")
-                logger.info(f"  - Large hunks: {analysis.get('large_hunks', 0)}")
+                # Run validation in shadow workspace
+                validation_result = await self.shadow_manager.validate_in_shadow(
+                    workspace_id, patch
+                )
                 
-                # Enhanced post-validation with debugging
-                is_valid, validation_error = self.validator.validate_post_application(patched_code, file_path)
-                if not is_valid:
-                    logger.error(f"❌ Post-validation failed for {file_path}: {validation_error}")
-                    logger.error(f"🔍 First 500 chars of patched code: {patched_code[:500]}")
-                    return {
-                        "success": False,
-                        "patches": patches,
-                        "error": f"Post-validation failed: {validation_error}"
-                    }
+                if not validation_result['success']:
+                    logger.error(f"❌ Shadow validation failed for {file_path}: {validation_result.get('error')}")
+                    await self.shadow_manager.cleanup_workspace(workspace_id)
+                    continue
                 
-                # Update the final content and mark patch as successful
-                final_content = patched_code
-                successful_patches.append(patch)
+                logger.info(f"✅ Shadow validation passed: {validation_result['recommendation']}")
                 
-                logger.info(f"✅ Surgical patch validation passed for {file_path}")
+                # Generate diff for interactive approval
+                diff_data = await self.shadow_manager.get_diff_for_approval(workspace_id)
+                
+                if not diff_data or not diff_data['requires_approval']:
+                    logger.info(f"⚠️ No changes requiring approval for {file_path}")
+                    await self.shadow_manager.cleanup_workspace(workspace_id)
+                    continue
+                
+                # Send for interactive approval
+                approval_decision = await self._request_interactive_approval(
+                    workspace_id, diff_data, patch
+                )
+                
+                if approval_decision == 'approved':
+                    logger.info(f"✅ Patch approved for {file_path}")
+                    final_content = patched_code
+                    successful_patches.append(patch)
+                    
+                    # Broadcast approval result
+                    await self.websocket_manager.broadcast_approval_result(
+                        workspace_id, 'approved', {
+                            'file_path': file_path,
+                            'timestamp': asyncio.get_event_loop().time()
+                        }
+                    )
+                else:
+                    logger.info(f"❌ Patch rejected for {file_path}: {approval_decision}")
+                
+                # Cleanup shadow workspace
+                await self.shadow_manager.cleanup_workspace(workspace_id)
                 
             except Exception as e:
-                logger.error(f"💥 Exception processing surgical patch for {file_path}: {e}")
-                return {
-                    "success": False,
-                    "patches": patches,
-                    "error": str(e)
-                }
+                logger.error(f"💥 Exception processing patch for {file_path}: {e}")
+                continue
         
         if not successful_patches:
-            logger.warning(f"⚠️ No surgical patches were successfully processed for {file_path}")
+            logger.warning(f"⚠️ No patches were approved for {file_path}")
             return {
                 "success": False,
                 "patches": patches,
-                "error": "No surgical patches were successfully processed"
+                "error": "No patches were approved"
             }
         
-        # Commit the changes
+        # Commit the approved changes
         commit_message = self._generate_surgical_commit_message(file_path, successful_patches)
-        logger.info(f"🔧 Committing surgical changes to {file_path}")
+        logger.info(f"🔧 Committing approved changes to {file_path}")
         commit_success = await self.github_client.commit_file(
             file_path, final_content, commit_message, branch_name
         )
         
         if not commit_success:
-            logger.error(f"❌ Failed to commit surgical changes to {branch_name} for {file_path}")
+            logger.error(f"❌ Failed to commit approved changes to {branch_name} for {file_path}")
             return {
                 "success": False,
                 "patches": patches,
-                "error": f"Failed to commit surgical changes to {branch_name}"
+                "error": f"Failed to commit approved changes to {branch_name}"
             }
         
-        logger.info(f"✅ Successfully committed surgical patches to {file_path}")
+        logger.info(f"✅ Successfully committed approved patches to {file_path}")
         
         return {
             "success": True,
             "patches": successful_patches,
             "content": final_content,
-            "quality_score": analysis.get("quality_score", 1.0),
-            "change_summary": diff_result.get("change_summary", "Surgical changes applied"),
             "is_surgical": True
         }
     
@@ -317,7 +301,70 @@ class PatchService:
         else:
             return f"🔧 Apply {len(patches)} surgical fixes to {file_path}"
     
-    # ... keep existing code (validation methods, utility functions)
+    async def _request_interactive_approval(self, workspace_id: str, diff_data: Dict[str, Any], patch: Dict[str, Any]) -> str:
+        """Request interactive approval for patch and wait for decision"""
+        try:
+            # Create approval request
+            approval_request = {
+                'workspace_id': workspace_id,
+                'file_path': diff_data['file_path'],
+                'diff_data': diff_data['diff_data'],
+                'patch_summary': {
+                    'confidence_score': patch.get('confidence_score', 0.5),
+                    'patch_type': patch.get('patch_type', 'unknown'),
+                    'processing_strategy': patch.get('processing_strategy', 'unknown')
+                },
+                'approval_options': ['approve', 'reject', 'modify'],
+                'timestamp': asyncio.get_event_loop().time()
+            }
+            
+            # Store in approval cache
+            self.approval_cache[workspace_id] = {
+                'status': 'pending',
+                'request_time': asyncio.get_event_loop().time()
+            }
+            
+            # Broadcast approval request via WebSocket
+            await self.websocket_manager.broadcast_approval_request(
+                workspace_id, approval_request
+            )
+            
+            logger.info(f"📤 Sent interactive approval request for {diff_data['file_path']}")
+            
+            # Wait for approval decision (with timeout)
+            timeout = 300  # 5 minutes timeout
+            start_time = asyncio.get_event_loop().time()
+            
+            while asyncio.get_event_loop().time() - start_time < timeout:
+                if workspace_id in self.approval_cache:
+                    cache_entry = self.approval_cache[workspace_id]
+                    if cache_entry['status'] != 'pending':
+                        decision = cache_entry['status']
+                        # Clean up cache
+                        del self.approval_cache[workspace_id]
+                        return decision
+                
+                # Check every second
+                await asyncio.sleep(1)
+            
+            # Timeout - default to reject
+            logger.warning(f"⏰ Approval timeout for {diff_data['file_path']} - defaulting to reject")
+            if workspace_id in self.approval_cache:
+                del self.approval_cache[workspace_id]
+            return 'timeout_reject'
+            
+        except Exception as e:
+            logger.error(f"❌ Error in interactive approval: {e}")
+            return 'error_reject'
+    
+    def set_approval_decision(self, workspace_id: str, decision: str) -> bool:
+        """Set approval decision for a workspace (called by API endpoint)"""
+        if workspace_id in self.approval_cache:
+            self.approval_cache[workspace_id]['status'] = decision
+            self.approval_cache[workspace_id]['decision_time'] = asyncio.get_event_loop().time()
+            logger.info(f"✅ Approval decision set for {workspace_id}: {decision}")
+            return True
+        return False
     
     async def _validate_target_branch(self) -> bool:
         """Validate that the target branch exists and is accessible"""

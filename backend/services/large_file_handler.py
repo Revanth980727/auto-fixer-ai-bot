@@ -86,72 +86,8 @@ class LargeFileHandler:
         """Check if line is a function definition."""
         return bool(re.match(r'^\s*def\s+\w+', line))
     
-    async def combine_chunk_patches(self, chunk_patches: List[Dict[str, Any]], file_info: Dict, ticket: Any) -> Optional[Dict[str, Any]]:
-        """Process using semantic approach only - chunk merging deprecated."""
-        try:
-            # Use semantic approach as the primary and only method
-            logger.info(f"🎯 Using semantic processing for {file_info['path']} (chunk merging deprecated)")
-            
-            # Import semantic patcher for large file handling
-            from services.semantic_patcher import SemanticPatcher
-            semantic_patcher = SemanticPatcher()
-            
-            # Use semantic patcher with AST subdivision for large files
-            targets = semantic_patcher.identify_target_nodes(
-                file_info['content'], 
-                ticket.description + " " + (ticket.error_trace or ""),
-                max_file_size=self.chunk_size
-            )
-            
-            if not targets:
-                logger.warning(f"⚠️ No semantic targets found for {file_info['path']}")
-                return None
-            
-            # Generate semantic patches for top targets
-            semantic_patches = []
-            for target in targets[:3]:  # Process top 3 targets
-                patch_info = semantic_patcher.generate_surgical_fix(
-                    target, 
-                    ticket.description, 
-                    file_info['path']
-                )
-                if patch_info:
-                    semantic_patches.append(patch_info)
-            
-            if not semantic_patches:
-                logger.warning(f"⚠️ No semantic patches generated for {file_info['path']}")
-                return None
-            
-            # Apply the best semantic patch
-            best_patch = max(semantic_patches, key=lambda x: x.get('confidence_score', 0))
-            
-            # Apply surgical patch
-            apply_result = semantic_patcher.apply_surgical_patch(
-                file_info['content'],
-                best_patch,
-                best_patch.get('original_content', '')
-            )
-            
-            if not apply_result.get('success'):
-                logger.error(f"❌ Semantic patch application failed: {apply_result.get('error')}")
-                return None
-            
-            # Create the final semantic patch result
-            semantic_result = {
-                'patch_content': apply_result['patch_diff'],
-                'patched_code': apply_result['patched_content'],
-                'confidence_score': best_patch.get('confidence_score', 0.8),
-                'commit_message': f"Semantic fix for {file_info['path']}",
-                'explanation': f"Applied semantic patch to {best_patch.get('target_name', 'target')}",
-                'patch_type': 'semantic_ast_based',
-                'targets_processed': len(targets),
-                'lines_changed': apply_result.get('lines_changed', 0),
-                'addresses_issue': True
-            }
-            
-            logger.info(f"✅ Semantic processing successful for {file_info['path']}")
-            return semantic_result
-            
-        except Exception as e:
-            logger.error(f"❌ Error in semantic processing: {e}")
-            return None
+    def combine_chunk_patches(self, chunk_patches: List[Dict[str, Any]], file_info: Dict, ticket: Any) -> Optional[Dict[str, Any]]:
+        """DEPRECATED: Chunk merging removed - use semantic approach only."""
+        logger.error("❌ DEPRECATED: combine_chunk_patches called - chunk merging is disabled")
+        logger.error("📍 Use SemanticPatcher.identify_target_nodes() instead for AST-based processing")
+        raise NotImplementedError("Chunk merging has been removed. Use semantic processing instead.")
