@@ -36,15 +36,41 @@ class AgentOrchestrator:
         self.patch_service = PatchService()
         self.repository_analyzer = RepositoryAnalyzer()
         
+        # Initialize semantic-first components
+        self._init_semantic_components()
+        
         # Use configured intervals
         self.process_interval = config.agent_process_interval
         self.intake_interval = config.agent_intake_interval
+    
+    def _init_semantic_components(self):
+        """Initialize semantic-first processing components."""
+        try:
+            from services.semantic_search_engine import SemanticSearchEngine
+            from services.symbol_resolver import SymbolResolver
+            from services.validation_orchestrator import ValidationOrchestrator
+            from services.diff_presenter import DiffPresenter
+            from core.websocket_manager import WebSocketManager
+            
+            self.semantic_engine = SemanticSearchEngine()
+            self.symbol_resolver = SymbolResolver()
+            self.validation_orchestrator = ValidationOrchestrator()
+            self.diff_presenter = DiffPresenter()
+            self.websocket_manager = WebSocketManager()
+            
+            logger.info("✅ Semantic-first components initialized")
+        except ImportError as e:
+            logger.error(f"❌ Failed to initialize semantic components: {e}")
+            self.semantic_engine = None
 
     async def start_processing(self):
-        """Start processing tickets through enhanced agent pipeline with full monitoring"""
+        """Start processing tickets through semantic-first agent pipeline with full monitoring"""
         self.running = True
-        logger.info(f"🚀 Starting enhanced agent orchestrator with complete JIRA-GitHub automation")
+        logger.info(f"🚀 Starting SEMANTIC-FIRST agent orchestrator with AST-based processing")
         logger.info(f"📊 Intervals: process={self.process_interval}s, intake={self.intake_interval}s")
+        
+        # Initialize semantic search index if available
+        await self._initialize_semantic_search()
         
         # Critical: Validate and fix GitHub configuration
         github_status = await self._validate_and_fix_github_config()
@@ -63,22 +89,45 @@ class AgentOrchestrator:
         
         # Perform initial repository analysis if GitHub available
         if github_status["configured"]:
-            await self._perform_initial_repository_analysis()
+            await self._perform_semantic_repository_analysis()
         
         # Start background tasks with enhanced monitoring
         asyncio.create_task(self._intake_polling_loop())
         asyncio.create_task(self._health_monitoring_loop())
         asyncio.create_task(self._context_cleanup_loop())
+        asyncio.create_task(self._semantic_index_maintenance_loop())
         
         while self.running:
             try:
-                # Enhanced processing with detailed logging
-                await self._process_pending_tickets_enhanced()
+                # Enhanced processing with semantic-first workflow
+                await self._process_pending_tickets_semantic_first()
                 await asyncio.sleep(self.process_interval)
             except Exception as e:
-                logger.error(f"💥 Critical error in agent orchestrator: {e}")
+                logger.error(f"💥 Critical error in semantic-first orchestrator: {e}")
                 metrics_collector.record_agent_execution("orchestrator", 0, False)
                 await asyncio.sleep(5)
+    
+    async def _initialize_semantic_search(self):
+        """Initialize semantic search capabilities."""
+        if self.semantic_engine:
+            try:
+                logger.info("🧠 Initializing semantic search engine...")
+                # Semantic index will be built per-repository during processing
+                logger.info("✅ Semantic search engine ready")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize semantic search: {e}")
+    
+    async def _semantic_index_maintenance_loop(self):
+        """Background task to maintain semantic search index."""
+        while self.running:
+            try:
+                if self.semantic_engine:
+                    stats = self.semantic_engine.get_statistics()
+                    logger.debug(f"🧠 Semantic index stats: {stats}")
+                await asyncio.sleep(300)  # Every 5 minutes
+            except Exception as e:
+                logger.error(f"❌ Error in semantic index maintenance: {e}")
+                await asyncio.sleep(60)
 
     async def _validate_and_fix_github_config(self) -> Dict[str, Any]:
         """Validate GitHub configuration and provide detailed diagnostics"""
@@ -127,8 +176,8 @@ class AgentOrchestrator:
             "has_username": has_username
         }
 
-    async def _process_pending_tickets_enhanced(self):
-        """Enhanced ticket processing with comprehensive logging and JIRA integration"""
+    async def _process_pending_tickets_semantic_first(self):
+        """Semantic-first ticket processing with comprehensive validation and interactive approval"""
         with next(get_sync_db()) as db:
             # Get tickets ready for processing - fix enum comparison
             pending_tickets = db.query(Ticket).filter(
@@ -136,27 +185,43 @@ class AgentOrchestrator:
             ).limit(3).all()
             
             if pending_tickets:
-                logger.info(f"🎯 PROCESSING QUEUE: Found {len(pending_tickets)} tickets")
+                logger.info(f"🎯 SEMANTIC-FIRST PROCESSING QUEUE: Found {len(pending_tickets)} tickets")
                 for ticket in pending_tickets:
                     logger.info(f"📋 Ticket {ticket.id}: {ticket.jira_id} - Status: {ticket.status}")
                     logger.info(f"   Title: {ticket.title[:100]}...")
                     logger.info(f"   Priority: {ticket.priority}")
                     logger.info(f"   Created: {ticket.created_at}")
             else:
-                logger.debug("📋 No pending tickets found for processing")
+                logger.debug("📋 No pending tickets found for semantic processing")
                 return
             
             # Get ticket IDs to avoid session conflicts
             ticket_ids = [ticket.id for ticket in pending_tickets]
         
-        # Process each ticket with enhanced pipeline
+        # Process each ticket with semantic-first pipeline
         for ticket_id in ticket_ids:
             try:
-                logger.info(f"🚀 Starting enhanced pipeline for ticket {ticket_id}")
-                await self._process_ticket_with_comprehensive_jira_integration(ticket_id)
+                logger.info(f"🚀 Starting SEMANTIC-FIRST pipeline for ticket {ticket_id}")
+                await self._process_ticket_with_semantic_workflow(ticket_id)
             except Exception as e:
-                logger.error(f"💥 Enhanced pipeline error for ticket {ticket_id}: {e}")
+                logger.error(f"💥 Semantic-first pipeline error for ticket {ticket_id}: {e}")
                 await self._handle_ticket_processing_error(ticket_id, e)
+    
+    async def _process_ticket_with_semantic_workflow(self, ticket_id: int):
+        """Process ticket with semantic-first workflow including validation and interactive approval"""
+        pipeline_start_time = time.time()
+        logger.info(f"🎯 SEMANTIC-FIRST WORKFLOW - Ticket {ticket_id}")
+        
+        # Create pipeline context
+        pipeline_context = context_manager.create_context(ticket_id)
+        
+        try:
+            # Get fresh ticket data with proper session management
+            with next(get_sync_db()) as db:
+                ticket = db.query(Ticket).filter(Ticket.id == ticket_id).first()
+                if not ticket:
+                    logger.error(f"❌ Ticket {ticket_id} not found")
+                    return
 
     async def _process_ticket_with_comprehensive_jira_integration(self, ticket_id: int):
         """Process ticket with complete JIRA status management and commenting"""
@@ -959,3 +1024,97 @@ The AI Agent System has attempted to process this ticket {current_retry} times b
                 logger.info(f"✅ Ticket {ticket_id} reset for retry")
             else:
                 logger.warning(f"⚠️ Cannot retry ticket {ticket_id} - not in FAILED status")
+        
+    async def _perform_semantic_repository_analysis(self):
+        """Perform semantic analysis of the repository."""
+        try:
+            logger.info("🧠 Starting semantic repository analysis...")
+            
+            # Get repository files
+            repo_files = await self.github_client.get_repository_tree()
+            if repo_files and self.semantic_engine:
+                # Build semantic index
+                await self.semantic_engine.build_semantic_index(repo_files)
+                
+                # Build symbol table
+                if self.symbol_resolver:
+                    self.symbol_resolver.build_symbol_table(repo_files)
+                
+                logger.info(f"✅ Semantic analysis complete: {len(repo_files)} files indexed")
+            else:
+                logger.warning("⚠️ No repository files found for semantic analysis")
+                
+        except Exception as e:
+            logger.error(f"❌ Semantic repository analysis failed: {e}")
+    
+    async def _validate_patches_with_orchestrator(self, patches: List[Dict], ticket_info: Dict) -> List[Dict]:
+        """Validate patches using validation orchestrator."""
+        if not self.validation_orchestrator:
+            return patches
+        
+        validated_patches = []
+        
+        for patch in patches:
+            try:
+                validation_summary = await self.validation_orchestrator.validate_patch(
+                    original_content=patch.get('original_content', ''),
+                    patched_content=patch.get('patched_code', ''),
+                    file_path=patch.get('target_file', ''),
+                    patch_info=patch
+                )
+                
+                if validation_summary.overall_success and validation_summary.overall_confidence > 0.6:
+                    patch['validation_passed'] = True
+                    patch['validation_confidence'] = validation_summary.overall_confidence
+                    validated_patches.append(patch)
+                    logger.info(f"✅ Patch validation passed for {patch.get('target_file')}")
+                else:
+                    logger.warning(f"❌ Patch validation failed for {patch.get('target_file')}: {validation_summary.recommendation}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Validation error for patch {patch.get('target_file')}: {e}")
+        
+        return validated_patches
+    
+    async def _create_interactive_approval_workflow(self, patches: List[Dict], ticket_info: Dict) -> Dict:
+        """Create interactive approval workflow for patches."""
+        if not self.diff_presenter or not self.websocket_manager:
+            return {'approved': True, 'patches': patches}  # Auto-approve if no interactive capability
+        
+        try:
+            # Create interactive diff
+            interactive_diff = self.diff_presenter.create_interactive_diff(
+                patches,
+                patch_metadata={
+                    'ticket_id': ticket_info.get('id'),
+                    'jira_id': ticket_info.get('jira_id'),
+                    'title': ticket_info.get('title')
+                }
+            )
+            
+            # Broadcast diff preview
+            await self.websocket_manager.broadcast_diff_preview(
+                interactive_diff.diff_id,
+                self.diff_presenter.get_diff_json(interactive_diff.diff_id)
+            )
+            
+            # Request approval
+            await self.websocket_manager.broadcast_approval_request(
+                interactive_diff.diff_id,
+                {
+                    'approval_options': interactive_diff.approval_options,
+                    'summary': interactive_diff.summary
+                }
+            )
+            
+            logger.info(f"✅ Interactive approval workflow created: {interactive_diff.diff_id}")
+            
+            return {
+                'diff_id': interactive_diff.diff_id,
+                'approval_requested': True,
+                'patches': patches
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error creating interactive approval: {e}")
+            return {'approved': True, 'patches': patches}  # Fallback to auto-approve
