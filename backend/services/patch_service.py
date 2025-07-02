@@ -3,7 +3,7 @@ import re
 import hashlib
 from typing import Dict, Any, List, Optional, Tuple
 from services.github_client import GitHubClient
-from services.fine_grained_diff import FineGrainedDiffGenerator
+from services.diff_presenter import DiffPresenter
 from services.patch_validator import PatchValidator
 from core.config import config
 import logging
@@ -18,7 +18,7 @@ class PatchService:
     def __init__(self):
         self.github_client = GitHubClient()
         self.target_branch = config.github_target_branch
-        self.diff_generator = FineGrainedDiffGenerator()
+        self.diff_presenter = DiffPresenter()
         self.validator = PatchValidator()
         self.max_safe_hunk_size = 50  # Reject patches with hunks larger than this
     
@@ -188,8 +188,8 @@ class PatchService:
                         "error": "No patched_code provided"
                     }
                 
-                # Generate fine-grained diff for analysis
-                diff_result = self.diff_generator.generate_minimal_diff(
+                # Generate diff for analysis using diff presenter
+                diff_result = self.diff_presenter.create_interactive_diff(
                     final_content, patched_code, file_path
                 )
                 

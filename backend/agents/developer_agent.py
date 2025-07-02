@@ -6,7 +6,8 @@ from services.github_client import GitHubClient
 from services.json_response_handler import JSONResponseHandler
 from services.large_file_handler import LargeFileHandler
 from services.semantic_evaluator import SemanticEvaluator
-from services.minimal_change_prompter import MinimalChangePrompter
+from services.semantic_patcher import SemanticPatcher
+from .developer_agent_helpers import create_semantic_patch_prompt, create_semantic_chunk_prompt
 from services.patch_validator import PatchValidator
 from typing import Dict, Any, Optional
 import json
@@ -24,7 +25,7 @@ class DeveloperAgent(BaseAgent):
         self.json_handler = JSONResponseHandler()
         self.file_handler = LargeFileHandler()
         self.semantic_evaluator = SemanticEvaluator()
-        self.minimal_prompter = MinimalChangePrompter()
+        self.semantic_patcher = SemanticPatcher()
         self.patch_validator = PatchValidator()
         self.large_file_threshold = 12000  # Reduced threshold for better chunking
         self.max_hunk_size = 30  # Stricter size limit
@@ -174,8 +175,18 @@ class DeveloperAgent(BaseAgent):
         try:
             self.log_execution(execution_id, f"📝 Starting surgical patch generation for {file_info['path']}")
             
-            # Use minimal change prompter with enhanced instructions
-            patch_prompt = self.minimal_prompter.create_minimal_patch_prompt(ticket, file_info, analysis)
+            # Use semantic approach for targeted fixes
+            targets = self.semantic_patcher.identify_target_nodes(
+                file_info['content'], 
+                f"{ticket.description} {ticket.error_trace or ''}"
+            )
+            
+            if not targets:
+                self.log_execution(execution_id, f"⚠️ No semantic targets found for {file_info['path']}")
+                return None
+            
+            # Generate patch for primary target
+            patch_prompt = create_semantic_patch_prompt(ticket, file_info, targets[0])
             
             # Enhanced system prompt for minimal changes
             system_prompt = f"""You are an expert at making SURGICAL code fixes. Your goal is to modify the ABSOLUTE MINIMUM necessary to fix the issue.
@@ -313,8 +324,8 @@ Generate only valid JSON responses with minimal unified diffs."""
                 
                 self.log_execution(execution_id, f"🔧 Processing logical chunk {chunk_num}/{total_chunks}")
                 
-                # Use enhanced prompting for chunks
-                chunk_prompt = self.minimal_prompter.create_chunked_minimal_prompt(ticket, chunk, file_info)
+                # Use semantic approach for chunk processing
+                chunk_prompt = create_semantic_chunk_prompt(ticket, chunk, file_info)
                 
                 # Enhanced system prompt for chunk processing
                 system_prompt = """You are analyzing a logical code chunk for minimal fixes. 

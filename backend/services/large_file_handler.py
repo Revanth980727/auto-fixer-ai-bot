@@ -2,7 +2,6 @@
 import json
 import re
 from typing import Dict, Any, List, Optional, Tuple
-from services.chunk_merger import ChunkMerger
 from services.semantic_file_handler import SemanticFileHandler
 import logging
 
@@ -14,7 +13,6 @@ class LargeFileHandler:
     def __init__(self):
         self.chunk_size = 3000  # Reduced for better context
         self.overlap_size = 200  # Overlap between chunks
-        self.chunk_merger = ChunkMerger()
         self.semantic_handler = SemanticFileHandler()
     
     def create_file_chunks(self, content: str, file_path: str) -> List[Dict[str, Any]]:
