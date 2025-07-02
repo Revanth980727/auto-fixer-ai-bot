@@ -99,10 +99,9 @@ class SemanticFileHandler:
             prompt = fix_info['prompt']
             
             try:
-                response = await self.openai_client.chat_completion(
+                response = await self.openai_client.complete_chat(
                     messages=[{"role": "user", "content": prompt}],
-                    model="gpt-4o-mini",
-                    temperature=0.1  # Low temperature for precise fixes
+                    model="gpt-4o-mini"
                 )
                 
                 fixed_content = response.choices[0].message.content.strip()
