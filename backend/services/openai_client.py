@@ -38,7 +38,7 @@ class OpenAIClient:
             return False
         return True
     
-    async def complete_chat(self, messages: List[Dict[str, str]], model: str = None, max_retries: int = None) -> str:
+    async def complete_chat(self, messages: List[Dict[str, str]], model: str = None, max_retries: int = None, force_json: bool = False) -> str:
         """Complete a chat conversation with enhanced timeout and monitoring"""
         if not self.client:
             raise RuntimeError("OpenAI client not initialized. Check API key and dependencies.")
@@ -71,19 +71,32 @@ class OpenAIClient:
                 heartbeat_task = asyncio.create_task(heartbeat())
                 
                 try:
+                    # Prepare completion parameters
+                    completion_params = {
+                        "model": model,
+                        "messages": messages,
+                        "max_tokens": model_config.max_tokens_patch,
+                        "temperature": model_config.temperature
+                    }
+                    
+                    # Force JSON mode for patch generation if requested
+                    if force_json and model in ["gpt-4o-mini", "gpt-4o", "gpt-4-turbo"]:
+                        completion_params["response_format"] = {"type": "json_object"}
+                    
                     response = await asyncio.wait_for(
-                        self.client.chat.completions.create(
-                            model=model,
-                            messages=messages,
-                            max_tokens=model_config.max_tokens_patch,
-                            temperature=model_config.temperature
-                        ),
+                        self.client.chat.completions.create(**completion_params),
                         timeout=timeout
                     )
                     
                     heartbeat_task.cancel()
+                    
+                    # Log raw response for debugging
+                    raw_content = response.choices[0].message.content
+                    if force_json:
+                        logger.info(f"📝 Raw OpenAI JSON response (first 500 chars): {raw_content[:500]}")
+                    
                     logger.info(f"✅ OpenAI request successful on attempt {attempt + 1}")
-                    return response.choices[0].message.content
+                    return raw_content
                     
                 except asyncio.CancelledError:
                     heartbeat_task.cancel()

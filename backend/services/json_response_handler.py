@@ -13,36 +13,63 @@ class JSONResponseHandler:
     def clean_and_parse_json(response: str) -> Tuple[Optional[Dict[str, Any]], str]:
         """Clean and parse JSON response with multiple fallback strategies"""
         if not response or not response.strip():
+            logger.error("❌ Empty response received")
             return None, "Empty response"
+        
+        logger.info(f"🔍 Attempting to parse JSON response ({len(response)} chars)")
         
         # Strategy 1: Try direct parsing
         try:
-            return json.loads(response.strip()), ""
-        except json.JSONDecodeError:
-            pass
+            result = json.loads(response.strip())
+            logger.info("✅ Direct JSON parsing successful")
+            return result, ""
+        except json.JSONDecodeError as e:
+            logger.warning(f"❌ Direct parsing failed: {e}")
         
         # Strategy 2: Clean common markdown formatting
         cleaned = JSONResponseHandler._clean_markdown_formatting(response)
+        logger.info(f"🧹 Cleaned markdown formatting ({len(cleaned)} chars)")
         try:
-            return json.loads(cleaned), ""
-        except json.JSONDecodeError:
-            pass
+            result = json.loads(cleaned)
+            logger.info("✅ Markdown cleanup parsing successful")
+            return result, ""
+        except json.JSONDecodeError as e:
+            logger.warning(f"❌ Markdown cleanup parsing failed: {e}")
         
         # Strategy 3: Fix common JSON issues
         fixed = JSONResponseHandler._fix_common_json_issues(cleaned)
+        logger.info(f"🔧 Applied JSON fixes ({len(fixed)} chars)")
         try:
-            return json.loads(fixed), ""
-        except json.JSONDecodeError:
-            pass
+            result = json.loads(fixed)
+            logger.info("✅ JSON fixes parsing successful")
+            return result, ""
+        except json.JSONDecodeError as e:
+            logger.warning(f"❌ JSON fixes parsing failed: {e}")
         
         # Strategy 4: Extract JSON from mixed content
         extracted = JSONResponseHandler._extract_json_from_text(response)
         if extracted:
+            logger.info(f"🎯 Extracted JSON from text ({len(extracted)} chars)")
             try:
-                return json.loads(extracted), ""
-            except json.JSONDecodeError:
-                pass
+                result = json.loads(extracted)
+                logger.info("✅ JSON extraction parsing successful")
+                return result, ""
+            except json.JSONDecodeError as e:
+                logger.warning(f"❌ JSON extraction parsing failed: {e}")
         
+        # Strategy 5: Try to build minimal valid JSON from response
+        minimal_json = JSONResponseHandler._create_minimal_json(response)
+        if minimal_json:
+            logger.info("🔨 Created minimal JSON from response")
+            try:
+                result = json.loads(minimal_json)
+                logger.info("✅ Minimal JSON parsing successful")
+                return result, ""
+            except json.JSONDecodeError as e:
+                logger.warning(f"❌ Minimal JSON parsing failed: {e}")
+        
+        logger.error("💥 All JSON parsing strategies failed")
+        logger.error(f"📝 Raw response sample: {response[:200]}...")
         return None, "Failed to parse JSON after all strategies"
     
     @staticmethod
@@ -86,6 +113,48 @@ class JSONResponseHandler:
         # Return the largest match (likely the main JSON object)
         if matches:
             return max(matches, key=len)
+        
+        return None
+    
+    @staticmethod
+    def _create_minimal_json(text: str) -> Optional[str]:
+        """Create minimal valid JSON from response text"""
+        try:
+            # Look for key fields in the text
+            patch_content = ""
+            patched_code = ""
+            explanation = "Minimal patch extracted from response"
+            confidence_score = 0.5
+            
+            # Try to extract patch content
+            patch_match = re.search(r'["\']?patch_content["\']?\s*:\s*["\']([^"\']*)["\']', text, re.IGNORECASE | re.DOTALL)
+            if patch_match:
+                patch_content = patch_match.group(1)
+            
+            # Try to extract patched code
+            code_match = re.search(r'["\']?patched_code["\']?\s*:\s*["\']([^"\']*)["\']', text, re.IGNORECASE | re.DOTALL)
+            if code_match:
+                patched_code = code_match.group(1)
+            
+            # Try to extract explanation
+            exp_match = re.search(r'["\']?explanation["\']?\s*:\s*["\']([^"\']*)["\']', text, re.IGNORECASE | re.DOTALL)
+            if exp_match:
+                explanation = exp_match.group(1)
+            
+            # Only create minimal JSON if we have some content
+            if patch_content or patched_code:
+                minimal_json = {
+                    "patch_content": patch_content,
+                    "patched_code": patched_code,
+                    "explanation": explanation,
+                    "confidence_score": confidence_score,
+                    "lines_modified": 1,
+                    "commit_message": "Minimal patch fix"
+                }
+                return json.dumps(minimal_json)
+            
+        except Exception as e:
+            logger.warning(f"Failed to create minimal JSON: {e}")
         
         return None
     

@@ -180,7 +180,7 @@ class DeveloperAgent(BaseAgent):
             # Generate patch for primary target
             patch_prompt = create_semantic_patch_prompt(ticket, file_info, targets[0])
             
-            # Enhanced system prompt for minimal changes
+            # Enhanced system prompt for minimal changes with strict JSON requirements
             system_prompt = f"""You are an expert at making SURGICAL code fixes. Your goal is to modify the ABSOLUTE MINIMUM necessary to fix the issue.
 
 CRITICAL CONSTRAINTS:
@@ -197,14 +197,25 @@ FORBIDDEN ACTIONS:
 - Modifying unrelated code sections
 - Creating wholesale replacements
 
-Generate only valid JSON responses with minimal unified diffs."""
+JSON RESPONSE REQUIREMENTS:
+You MUST respond with ONLY a valid JSON object containing these exact fields:
+{{
+  "patch_content": "unified diff format patch",
+  "patched_code": "complete fixed file content", 
+  "explanation": "brief explanation of the fix",
+  "confidence_score": 0.95,
+  "lines_modified": 1,
+  "commit_message": "brief commit message"
+}}
+
+Do not include any text before or after the JSON. The JSON must be valid and parseable."""
             
             self.log_execution(execution_id, f"🤖 Sending surgical change request for {file_info['path']}")
             
             response = await self.openai_client.complete_chat([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": patch_prompt}
-            ], model="gpt-4o-mini")
+            ], model="gpt-4o-mini", force_json=True)
             
             # Parse response
             patch_data, error = self.json_handler.clean_and_parse_json(response)
