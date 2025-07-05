@@ -29,13 +29,6 @@ export const WebSocketProvider: React.FC<WebSocketProviderProps> = ({ children }
   const maxReconnectAttempts = 5;
 
   const connect = () => {
-    // Skip WebSocket connection if using mock data
-    if (API_CONFIG.useMockData) {
-      console.log('Using mock data - WebSocket connection skipped');
-      setConnected(false);
-      return;
-    }
-
     try {
       const ws = new WebSocket(API_CONFIG.wsUrl);
 

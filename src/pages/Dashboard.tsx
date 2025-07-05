@@ -14,8 +14,7 @@ import { PipelineMonitor } from '@/components/dashboard/PipelineMonitor';
 import { DeveloperDebug } from '@/components/dashboard/DeveloperDebug';
 import { WebSocketProvider } from '@/components/providers/WebSocketProvider';
 import { Activity, AlertCircle, CheckCircle, Clock, TrendingUp, Shield } from 'lucide-react';
-import { apiUrl, API_CONFIG } from '@/config/api';
-import { mockApi } from '@/services/mockApi';
+import { apiUrl } from '@/config/api';
 import { SystemMetrics, Ticket, SystemHealth as SystemHealthType } from '@/types/metrics';
 
 const Dashboard = () => {
@@ -25,9 +24,6 @@ const Dashboard = () => {
   const { data: systemMetrics, isLoading: metricsLoading } = useQuery({
     queryKey: ['system-metrics'],
     queryFn: async (): Promise<SystemMetrics> => {
-      if (API_CONFIG.useMockData) {
-        return mockApi.getSystemMetrics();
-      }
       const response = await fetch(apiUrl('/api/metrics/system'));
       if (!response.ok) throw new Error('Failed to fetch metrics');
       return response.json();
@@ -39,9 +35,6 @@ const Dashboard = () => {
   const { data: tickets, isLoading: ticketsLoading } = useQuery({
     queryKey: ['tickets'],
     queryFn: async (): Promise<Ticket[]> => {
-      if (API_CONFIG.useMockData) {
-        return mockApi.getTickets();
-      }
       const response = await fetch(apiUrl('/api/tickets?limit=20'));
       if (!response.ok) throw new Error('Failed to fetch tickets');
       return response.json();
@@ -53,9 +46,6 @@ const Dashboard = () => {
   const { data: systemHealth } = useQuery({
     queryKey: ['system-health'],
     queryFn: async (): Promise<SystemHealthType> => {
-      if (API_CONFIG.useMockData) {
-        return mockApi.getHealthData();
-      }
       const response = await fetch(apiUrl('/api/metrics/health'));
       if (!response.ok) throw new Error('Failed to fetch health data');
       return response.json();
