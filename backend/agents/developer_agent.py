@@ -235,6 +235,9 @@ CRITICAL:
                 self.log_execution(execution_id, f"❌ JSON parsing failed for {file_info['path']}: {error}")
                 return None
             
+            # Ensure target_file is always present after successful parsing
+            patch_data["target_file"] = file_info["path"]
+            
             # Validate patch data structure
             is_valid, validation_error = self.json_handler.validate_patch_json(patch_data)
             if not is_valid:
