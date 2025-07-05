@@ -21,12 +21,15 @@ class GitHubClient:
     
     def _log_configuration(self):
         """Log GitHub configuration status"""
-        logger.info(f"GitHub Configuration - Token present: {'Yes' if self.token else 'No'}")
-        logger.info(f"GitHub Configuration - Repo owner: {self.repo_owner or 'Not set'}")
-        logger.info(f"GitHub Configuration - Repo name: {self.repo_name or 'Not set'}")
-        logger.info(f"GitHub Configuration - Target branch: {config.github_target_branch}")
+        logger.info(f"🔧 GitHub Configuration - Token present: {'Yes' if self.token else 'No'}")
+        logger.info(f"🔧 GitHub Configuration - Repo owner: {self.repo_owner or 'Not set'}")
+        logger.info(f"🔧 GitHub Configuration - Repo name: {self.repo_name or 'Not set'}")
+        logger.info(f"🔧 GitHub Configuration - Target branch: {config.github_target_branch}")
         if not self._is_configured():
-            logger.warning("GitHub client is not properly configured - will operate in degraded mode")
+            logger.warning("⚠️ GitHub client is not properly configured - will operate in degraded mode")
+            logger.warning(f"⚠️ Missing: Token={not bool(self.token)}, Owner={not bool(self.repo_owner)}, Repo={not bool(self.repo_name)}")
+        else:
+            logger.info(f"✅ GitHub client fully configured for {self.repo_owner}/{self.repo_name}")
     
     async def get_repository_tree(self, branch: str = None, recursive: bool = True) -> List[Dict[str, Any]]:
         """Get repository tree structure from GitHub API"""
@@ -143,10 +146,15 @@ class GitHubClient:
         
         try:
             logger.info(f"🔧 Starting commit for {file_path} to branch {branch}")
+            logger.info(f"🔧 Repository: {self.repo_owner}/{self.repo_name}")
+            logger.info(f"🔧 Commit message: {commit_message}")
             
             # Get current file SHA if it exists
             file_url = f"{self.base_url}/repos/{self.repo_owner}/{self.repo_name}/contents/{file_path}"
+            logger.info(f"🔍 Checking if file exists: {file_url}")
+            
             file_response = requests.get(file_url, headers=self.headers, params={"ref": branch})
+            logger.info(f"🔍 File check response: {file_response.status_code}")
             
             commit_data = {
                 "message": commit_message,
@@ -156,22 +164,41 @@ class GitHubClient:
             
             if file_response.status_code == 200:
                 # File exists, include SHA for update
-                commit_data["sha"] = file_response.json()["sha"]
-                logger.info(f"📝 File {file_path} exists, updating with SHA")
-            else:
+                file_data = file_response.json()
+                commit_data["sha"] = file_data["sha"]
+                logger.info(f"📝 File {file_path} exists, updating with SHA: {file_data['sha'][:8]}...")
+            elif file_response.status_code == 404:
                 logger.info(f"📝 File {file_path} does not exist, creating new file")
+            else:
+                logger.warning(f"⚠️ Unexpected response when checking file existence: {file_response.status_code}")
+                logger.warning(f"⚠️ Response: {file_response.text}")
             
-            logger.info(f"🔧 Sending commit request for {file_path}")
+            logger.info(f"🔧 Sending commit request for {file_path} to {self.base_url}")
             response = requests.put(file_url, headers=self.headers, json=commit_data)
             
             logger.info(f"🔧 Commit response status: {response.status_code}")
             
             if response.status_code in [200, 201]:
+                response_data = response.json()
+                commit_sha = response_data.get('commit', {}).get('sha', 'unknown')
                 logger.info(f"✅ Successfully committed file: {file_path} to branch: {branch}")
+                logger.info(f"✅ Commit SHA: {commit_sha[:8]}...")
+                logger.info(f"✅ GitHub URL: https://github.com/{self.repo_owner}/{self.repo_name}/commit/{commit_sha}")
                 return True
             else:
                 logger.error(f"❌ Failed to commit file {file_path}: HTTP {response.status_code}")
+                logger.error(f"❌ Response headers: {dict(response.headers)}")
                 logger.error(f"❌ Response text: {response.text}")
+                # Try to parse error details
+                try:
+                    error_data = response.json()
+                    if 'message' in error_data:
+                        logger.error(f"❌ GitHub API Error: {error_data['message']}")
+                    if 'errors' in error_data:
+                        for error in error_data['errors']:
+                            logger.error(f"❌ GitHub API Error Detail: {error}")
+                except:
+                    pass
                 return False
             
         except Exception as e:

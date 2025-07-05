@@ -205,8 +205,8 @@ class PatchService:
                     await self.shadow_manager.cleanup_workspace(workspace_id)
                     continue
                 
-                # Send for interactive approval
-                approval_decision = await self._request_interactive_approval(
+                # Determine approval strategy based on confidence
+                approval_decision = await self._determine_approval_strategy(
                     workspace_id, diff_data, patch
                 )
                 
@@ -356,6 +356,33 @@ class PatchService:
         except Exception as e:
             logger.error(f"❌ Error in interactive approval: {e}")
             return 'error_reject'
+    
+    async def _determine_approval_strategy(self, workspace_id: str, diff_data: Dict[str, Any], patch: Dict[str, Any]) -> str:
+        """Determine whether to auto-approve or request interactive approval"""
+        try:
+            confidence_score = patch.get('confidence_score', 0.0)
+            patch_type = patch.get('patch_type', 'unknown')
+            file_path = diff_data.get('file_path', 'unknown')
+            
+            # Auto-approve high-confidence, simple patches
+            if confidence_score >= 0.9 and patch_type in ['import_fix', 'syntax_fix', 'small_change']:
+                logger.info(f"🤖 Auto-approving high-confidence patch for {file_path} (confidence: {confidence_score})")
+                return 'approved'
+            
+            # Auto-approve medium-confidence patches for specific file types
+            elif confidence_score >= 0.7 and file_path.endswith(('.py', '.js', '.ts', '.jsx', '.tsx')):
+                logger.info(f"🤖 Auto-approving medium-confidence code patch for {file_path} (confidence: {confidence_score})")
+                return 'approved'
+            
+            # For lower confidence or complex changes, request interactive approval
+            else:
+                logger.info(f"👤 Requesting interactive approval for {file_path} (confidence: {confidence_score})")
+                return await self._request_interactive_approval(workspace_id, diff_data, patch)
+                
+        except Exception as e:
+            logger.error(f"❌ Error in approval strategy determination: {e}")
+            # Default to interactive approval on error
+            return await self._request_interactive_approval(workspace_id, diff_data, patch)
     
     def set_approval_decision(self, workspace_id: str, decision: str) -> bool:
         """Set approval decision for a workspace (called by API endpoint)"""
