@@ -10,7 +10,7 @@ class JSONResponseHandler:
     """Enhanced JSON response handler with robust parsing and validation"""
     
     @staticmethod
-    def clean_and_parse_json(response: str) -> Tuple[Optional[Dict[str, Any]], str]:
+    def clean_and_parse_json(response: str, target_file: str = "") -> Tuple[Optional[Dict[str, Any]], str]:
         """Clean and parse JSON response with multiple fallback strategies"""
         if not response or not response.strip():
             logger.error("❌ Empty response received")
@@ -80,7 +80,7 @@ class JSONResponseHandler:
                 logger.info(f"🔍 EXTRACTED JSON: {repr(extracted)}")
         
         # Strategy 6: Try to build minimal valid JSON from response
-        minimal_json = JSONResponseHandler._create_minimal_json(response)
+        minimal_json = JSONResponseHandler._create_minimal_json(response, target_file)
         if minimal_json:
             logger.info("🔨 Created minimal JSON from response")
             try:
@@ -192,7 +192,7 @@ class JSONResponseHandler:
         return text
     
     @staticmethod
-    def _create_minimal_json(text: str) -> Optional[str]:
+    def _create_minimal_json(text: str, target_file: str = "") -> Optional[str]:
         """Create minimal valid JSON from response text"""
         try:
             # Look for key fields in the text
@@ -224,7 +224,8 @@ class JSONResponseHandler:
                     "explanation": explanation,
                     "confidence_score": confidence_score,
                     "lines_modified": 1,
-                    "commit_message": "Minimal patch fix"
+                    "commit_message": "Minimal patch fix",
+                    "target_file": target_file
                 }
                 return json.dumps(minimal_json)
             

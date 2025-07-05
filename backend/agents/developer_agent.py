@@ -229,7 +229,7 @@ CRITICAL:
             ], model="gpt-4o-mini", force_json=True)
             
             # Parse response
-            patch_data, error = self.json_handler.clean_and_parse_json(response)
+            patch_data, error = self.json_handler.clean_and_parse_json(response, file_info['path'])
             
             if patch_data is None:
                 self.log_execution(execution_id, f"❌ JSON parsing failed for {file_info['path']}: {error}")
