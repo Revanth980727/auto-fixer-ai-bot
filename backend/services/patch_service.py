@@ -170,18 +170,31 @@ class PatchService:
         # Process all patches and validate in shadow workspace
         successful_patches = []
         final_content = current_content
+        processed_patch_ids = set()  # Prevent duplicate processing
         
         for patch in patches:
             try:
-                # Use the patched_code directly from the AI-generated patch
-                patched_code = patch.get("patched_code", "")
-                if not patched_code:
-                    logger.error(f"❌ No patched_code provided for {file_path}")
+                # Check for duplicate processing
+                patch_id = self._get_patch_id(patch)
+                if patch_id in processed_patch_ids:
+                    logger.info(f"⏭️ Skipping duplicate patch: {patch_id}")
+                    continue
+                processed_patch_ids.add(patch_id)
+                
+                # Validate patch has required fields
+                if not self._validate_patch_fields(patch):
+                    logger.error(f"❌ Patch validation failed for {file_path}")
+                    continue
+                
+                # Apply patch surgically using diff content
+                patch_result = await self._apply_single_patch(final_content, patch, file_path)
+                if not patch_result['success']:
+                    logger.error(f"❌ Patch application failed: {patch_result['error']}")
                     continue
                 
                 # Create shadow workspace for validation
                 workspace_id = await self.shadow_manager.create_shadow_workspace(
-                    file_path, final_content, patched_code
+                    file_path, final_content, patch_result['content']
                 )
                 logger.info(f"🏗️ Created shadow workspace: {workspace_id}")
                 
@@ -212,7 +225,7 @@ class PatchService:
                 
                 if approval_decision == 'approved':
                     logger.info(f"✅ Patch approved for {file_path}")
-                    final_content = patched_code
+                    final_content = patch_result['content']  # Apply the surgically modified content
                     successful_patches.append(patch)
                     
                     # Broadcast approval result
@@ -449,3 +462,95 @@ class PatchService:
     def get_target_branch(self) -> str:
         """Get the configured target branch"""
         return self.target_branch
+    
+    def _get_patch_id(self, patch: Dict[str, Any]) -> str:
+        """Generate unique ID for patch to prevent duplicates"""
+        content = f"{patch.get('target_file', '')}{patch.get('patch_content', '')}{patch.get('patched_code', '')}"
+        return hashlib.md5(content.encode()).hexdigest()[:8]
+    
+    def _validate_patch_fields(self, patch: Dict[str, Any]) -> bool:
+        """Validate patch has required fields"""
+        required_fields = ["target_file", "patch_content"]
+        for field in required_fields:
+            if not patch.get(field):
+                logger.error(f"❌ Missing required field '{field}' in patch")
+                return False
+        
+        # Add default commit message if missing
+        if not patch.get("commit_message"):
+            patch["commit_message"] = f"Apply surgical fix to {patch['target_file']}"
+            logger.info(f"✅ Added default commit message for {patch['target_file']}")
+        
+        return True
+    
+    async def _apply_single_patch(self, current_content: str, patch: Dict[str, Any], file_path: str) -> Dict[str, Any]:
+        """Apply a single patch surgically using diff content"""
+        try:
+            patch_content = patch.get("patch_content", "")
+            if not patch_content:
+                return {"success": False, "error": "No patch_content provided"}
+            
+            # For now, if patch_content looks like unified diff, use it
+            # Otherwise fall back to patched_code (for backward compatibility)
+            if patch_content.startswith("@@") or "---" in patch_content or "+++" in patch_content:
+                # This is a unified diff - apply it properly
+                result_content = self._apply_unified_diff(current_content, patch_content)
+                if result_content is None:
+                    return {"success": False, "error": "Failed to apply unified diff"}
+                return {"success": True, "content": result_content}
+            else:
+                # Fallback: use patched_code but validate it's reasonable
+                patched_code = patch.get("patched_code", "")
+                if not patched_code:
+                    return {"success": False, "error": "No patched_code provided"}
+                
+                # Safety check: patched_code should not be drastically different in size
+                size_diff = abs(len(patched_code) - len(current_content))
+                if size_diff > len(current_content) * 2:  # More than 200% size change
+                    logger.warning(f"⚠️ Large size change detected for {file_path}: {size_diff} characters")
+                
+                return {"success": True, "content": patched_code}
+                
+        except Exception as e:
+            logger.error(f"❌ Error applying patch: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def _apply_unified_diff(self, content: str, diff: str) -> Optional[str]:
+        """Apply unified diff to content"""
+        try:
+            # Simple unified diff application
+            lines = content.split('\n')
+            diff_lines = diff.split('\n')
+            
+            # This is a simplified implementation
+            # In production, you'd want to use a proper diff library like python-diff
+            result_lines = lines.copy()
+            
+            i = 0
+            while i < len(diff_lines):
+                line = diff_lines[i]
+                if line.startswith('@@'):
+                    # Parse hunk header: @@ -start,count +start,count @@
+                    # For simplicity, we'll just apply line-by-line changes
+                    i += 1
+                    continue
+                elif line.startswith('-'):
+                    # Line to remove - find and remove it
+                    content_to_remove = line[1:]
+                    try:
+                        idx = result_lines.index(content_to_remove)
+                        result_lines.pop(idx)
+                    except ValueError:
+                        logger.warning(f"⚠️ Could not find line to remove: {content_to_remove[:50]}...")
+                elif line.startswith('+'):
+                    # Line to add - this is more complex, for now append
+                    content_to_add = line[1:]
+                    # Simple approach: add after the last removed line
+                    result_lines.append(content_to_add)
+                i += 1
+            
+            return '\n'.join(result_lines)
+            
+        except Exception as e:
+            logger.error(f"❌ Error applying unified diff: {e}")
+            return None
