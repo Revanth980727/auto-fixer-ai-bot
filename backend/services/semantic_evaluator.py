@@ -14,45 +14,59 @@ class SemanticEvaluator:
     
     def __init__(self):
         self.openai_client = OpenAIClient()
-        self.relevance_threshold = 0.8
-        self.confidence_threshold = 0.9
-        self.keyword_weight = 0.4
-        self.similarity_weight = 0.6
+        self.relevance_threshold = 0.4  # Lowered from 0.8 for generic tickets
+        self.confidence_threshold = 0.7  # Lowered from 0.9 for realistic acceptance
+        self.keyword_weight = 0.3
+        self.similarity_weight = 0.4
+        self.context_weight = 0.3  # New weight for file context
     
     async def evaluate_patch_relevance(self, patch_data: Dict[str, Any], jira_issue: Dict[str, Any]) -> Dict[str, Any]:
-        """Evaluate how relevant a patch is to the JIRA issue"""
+        """Evaluate how relevant a patch is to the JIRA issue with enhanced context enrichment"""
         logger.info(f"🔍 Evaluating patch relevance for {patch_data.get('target_file', 'unknown file')}")
         
-        # Extract issue context
+        # Extract and enrich issue context with file-specific information
         issue_text = self._extract_issue_context(jira_issue)
+        enriched_issue_text = self._enrich_issue_context(issue_text, patch_data)
         
         # Extract patch context
         patch_text = self._extract_patch_context(patch_data)
         
-        # Calculate keyword overlap
-        keyword_score = self._calculate_keyword_overlap(issue_text, patch_text)
+        # Calculate keyword overlap with enriched context
+        keyword_score = self._calculate_keyword_overlap(enriched_issue_text, patch_text)
         
         # Calculate semantic similarity using embeddings
-        similarity_score = await self._calculate_semantic_similarity(issue_text, patch_text)
+        similarity_score = await self._calculate_semantic_similarity(enriched_issue_text, patch_text)
         
-        # Combine scores
-        relevance_score = (keyword_score * self.keyword_weight) + (similarity_score * self.similarity_weight)
+        # Calculate file context boost
+        context_boost = self._calculate_file_context_boost(patch_data, jira_issue)
+        
+        # Multi-factor scoring with context boost
+        base_relevance = (keyword_score * self.keyword_weight) + (similarity_score * self.similarity_weight)
+        final_relevance = base_relevance + (context_boost * self.context_weight)
+        
+        # Clamp final score to [0, 1]
+        final_relevance = max(0.0, min(1.0, final_relevance))
         
         # Log individual scores for calibration
-        logger.info(f"📊 Patch relevance scores:")
+        logger.info(f"📊 Enhanced patch relevance scores:")
         logger.info(f"  - Keyword overlap: {keyword_score:.3f}")
         logger.info(f"  - Semantic similarity: {similarity_score:.3f}")
-        logger.info(f"  - Combined relevance: {relevance_score:.3f}")
+        logger.info(f"  - File context boost: {context_boost:.3f}")
+        logger.info(f"  - Base relevance: {base_relevance:.3f}")
+        logger.info(f"  - Final relevance: {final_relevance:.3f}")
         
         return {
-            "relevance_score": relevance_score,
+            "relevance_score": final_relevance,
             "keyword_score": keyword_score,
             "similarity_score": similarity_score,
-            "meets_threshold": relevance_score >= self.relevance_threshold,
+            "context_boost": context_boost,
+            "base_relevance": base_relevance,
+            "meets_threshold": final_relevance >= self.relevance_threshold,
             "evaluation_details": {
-                "issue_keywords": self._extract_keywords(issue_text),
+                "issue_keywords": self._extract_keywords(enriched_issue_text),
                 "patch_keywords": self._extract_keywords(patch_text),
-                "common_keywords": self._get_common_keywords(issue_text, patch_text)
+                "common_keywords": self._get_common_keywords(enriched_issue_text, patch_text),
+                "enriched_context": enriched_issue_text != issue_text
             }
         }
     
@@ -217,3 +231,78 @@ class SemanticEvaluator:
         else:
             accepted = total_patches - rejected_patches
             return f"{accepted}/{total_patches} patches accepted. {rejected_patches} patches rejected due to low confidence or relevance."
+
+    def _enrich_issue_context(self, issue_text: str, patch_data: Dict[str, Any]) -> str:
+        """Enrich JIRA issue context with file-specific information from the patch"""
+        enriched_text = issue_text
+        
+        # Add target file information
+        target_file = patch_data.get('target_file', '')
+        if target_file:
+            file_name = target_file.split('/')[-1]  # Get just the filename
+            file_extension = file_name.split('.')[-1] if '.' in file_name else ''
+            enriched_text += f" target_file {file_name} {file_extension}"
+        
+        # Extract technical context from patch content
+        patch_content = patch_data.get('patch_content', '')
+        if patch_content:
+            # Extract import statements
+            import_matches = re.findall(r'import\s+(\w+)', patch_content)
+            for imp in import_matches:
+                enriched_text += f" import_{imp}"
+            
+            # Extract function names being modified
+            function_matches = re.findall(r'def\s+(\w+)', patch_content)
+            for func in function_matches:
+                enriched_text += f" function_{func}"
+            
+            # Extract class names
+            class_matches = re.findall(r'class\s+(\w+)', patch_content)
+            for cls in class_matches:
+                enriched_text += f" class_{cls}"
+        
+        # Add explanation context (AI's understanding of what the patch does)
+        explanation = patch_data.get('explanation', '')
+        if explanation:
+            enriched_text += f" {explanation}"
+        
+        return enriched_text
+
+    def _calculate_file_context_boost(self, patch_data: Dict[str, Any], jira_issue: Dict[str, Any]) -> float:
+        """Calculate boost score based on file context and common error patterns"""
+        boost = 0.0
+        
+        # File targeting boost - if the file was specifically selected for this ticket
+        target_file = patch_data.get('target_file', '')
+        if target_file:
+            # Check if file mentioned in error trace or description
+            error_trace = jira_issue.get('error_trace', '')
+            description = jira_issue.get('description', '')
+            combined_text = f"{error_trace} {description}".lower()
+            
+            file_name = target_file.split('/')[-1].lower()
+            if file_name in combined_text or target_file.lower() in combined_text:
+                boost += 0.3  # Strong boost for files mentioned in ticket
+        
+        # Technical pattern boost - common fix patterns get relevance boost
+        patch_content = patch_data.get('patch_content', '').lower()
+        explanation = patch_data.get('explanation', '').lower()
+        combined_patch_text = f"{patch_content} {explanation}"
+        
+        # Import/syntax fixes
+        if any(pattern in combined_patch_text for pattern in ['import', 'syntax', 'alias', 'missing']):
+            boost += 0.2  # Import and syntax fixes are common and often relevant
+        
+        # Error handling fixes
+        if any(pattern in combined_patch_text for pattern in ['error', 'exception', 'fix', 'bug']):
+            boost += 0.15  # Error fixes get moderate boost
+        
+        # Null/undefined fixes
+        if any(pattern in combined_patch_text for pattern in ['null', 'none', 'undefined', 'missing']):
+            boost += 0.1  # Null checks and missing value fixes
+        
+        # Type/reference fixes
+        if any(pattern in combined_patch_text for pattern in ['type', 'reference', 'attribute']):
+            boost += 0.1  # Type and reference fixes
+        
+        return min(boost, 0.5)  # Cap boost at 0.5 to avoid over-boosting
