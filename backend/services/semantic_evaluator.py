@@ -205,22 +205,31 @@ class SemanticEvaluator:
             return 0.0
     
     def should_accept_patch(self, patch_data: Dict[str, Any], evaluation: Dict[str, Any]) -> Tuple[bool, str]:
-        """Determine if patch should be accepted based on confidence and relevance"""
+        """Enhanced multi-factor patch acceptance with tiered logic and safety constraints"""
         confidence = patch_data.get('confidence_score', 0.0)
         relevance = evaluation.get('relevance_score', 0.0)
+        context_boost = evaluation.get('context_boost', 0.0)
+        lines_modified = patch_data.get('lines_modified', 0)
         
-        # Check thresholds
-        confidence_ok = confidence >= self.confidence_threshold
-        relevance_ok = relevance >= self.relevance_threshold
+        # Calculate multi-factor score
+        final_score = (0.5 * relevance) + (0.3 * confidence) + (0.2 * context_boost)
+        final_score = max(0.0, min(1.0, final_score))  # Clamp to [0, 1]
         
-        if confidence_ok and relevance_ok:
-            return True, f"High confidence ({confidence:.2f}) and relevance ({relevance:.2f})"
-        elif confidence_ok and not relevance_ok:
-            return False, f"High confidence ({confidence:.2f}) but low relevance ({relevance:.2f})"
-        elif not confidence_ok and relevance_ok:
-            return False, f"High relevance ({relevance:.2f}) but low confidence ({confidence:.2f})"
+        # Tier 1: High confidence + High relevance (always accept)
+        if confidence >= 0.9 and relevance >= 0.8:
+            return True, f"Tier 1: High confidence ({confidence:.2f}) and relevance ({relevance:.2f})"
+        
+        # Tier 2: Small patches with high confidence (safe minimal fixes)
+        elif lines_modified <= 5 and confidence >= 0.9:
+            return True, f"Tier 2: Small patch ({lines_modified} lines) with high confidence ({confidence:.2f})"
+        
+        # Tier 3: Multi-factor scoring for borderline cases
+        elif final_score >= 0.6:
+            return True, f"Tier 3: Multi-factor score ({final_score:.2f}) - confidence: {confidence:.2f}, relevance: {relevance:.2f}, context: {context_boost:.2f}"
+        
+        # Tier 4: Reject everything else
         else:
-            return False, f"Low confidence ({confidence:.2f}) and relevance ({relevance:.2f})"
+            return False, f"Rejected: Multi-factor score ({final_score:.2f}) below threshold - confidence: {confidence:.2f}, relevance: {relevance:.2f}, context: {context_boost:.2f}"
     
     def get_fallback_message(self, total_patches: int, rejected_patches: int) -> str:
         """Generate fallback message when no patches meet thresholds"""
