@@ -55,7 +55,7 @@ class SemanticEvaluator:
         logger.info(f"  - Base relevance: {base_relevance:.3f}")
         logger.info(f"  - Final relevance: {final_relevance:.3f}")
         
-        return {
+        return self._ensure_json_safe({
             "relevance_score": final_relevance,
             "keyword_score": keyword_score,
             "similarity_score": similarity_score,
@@ -68,7 +68,7 @@ class SemanticEvaluator:
                 "common_keywords": self._get_common_keywords(enriched_issue_text, patch_text),
                 "enriched_context": enriched_issue_text != issue_text
             }
-        }
+        })
     
     def _extract_issue_context(self, jira_issue: Dict[str, Any]) -> str:
         """Extract relevant text from JIRA issue"""
@@ -315,3 +315,20 @@ class SemanticEvaluator:
             boost += 0.1  # Type and reference fixes
         
         return min(boost, 0.5)  # Cap boost at 0.5 to avoid over-boosting
+
+    def _ensure_json_safe(self, data: Any) -> Any:
+        """Convert numpy types and other non-JSON-serializable types to JSON-safe types"""
+        if isinstance(data, dict):
+            return {key: self._ensure_json_safe(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._ensure_json_safe(item) for item in data]
+        elif isinstance(data, np.bool_):
+            return bool(data)
+        elif isinstance(data, np.integer):
+            return int(data)
+        elif isinstance(data, np.floating):
+            return float(data)
+        elif isinstance(data, np.ndarray):
+            return data.tolist()
+        else:
+            return data
