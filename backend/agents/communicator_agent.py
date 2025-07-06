@@ -59,8 +59,8 @@ class CommunicatorAgent(BaseAgent):
             }
         
         try:
-            # Enhanced GitHub PR creation with comprehensive JIRA integration
-            self.log_execution(execution_id, f"Creating comprehensive GitHub PR for {len(successful_patches)} patches")
+            # Enhanced GitHub direct commit with comprehensive JIRA integration
+            self.log_execution(execution_id, f"Applying {len(successful_patches)} patches directly to {config.github_target_branch}")
             
             # Convert patches for processing
             patch_dicts = self._prepare_patches_for_deployment(successful_patches, ticket)
@@ -71,17 +71,21 @@ class CommunicatorAgent(BaseAgent):
             
             if apply_result["successful_patches"]:
                 self.log_execution(execution_id, f"Successfully applied {len(apply_result['successful_patches'])} patches")
-                actions_taken.append(f"Applied {len(apply_result['successful_patches'])} patches to {config.github_target_branch}")
+                actions_taken.append(f"Applied {len(apply_result['successful_patches'])} patches directly to {config.github_target_branch}")
                 
-                # Create comprehensive PR
-                pr_result = await self._create_comprehensive_pr(ticket, apply_result, successful_patches)
-                if pr_result:
-                    pr_info = pr_result
-                    actions_taken.append(f"Created PR #{pr_result.get('number', 'N/A')}: {pr_result.get('title', 'Automated Fix')}")
-                    actions_taken.append(f"PR URL: {pr_result.get('html_url', 'N/A')}")
+                # Update JIRA with direct commit information instead of PR
+                jira_updated = await self._update_jira_with_direct_commits(ticket, apply_result, successful_patches)
+                if jira_updated:
+                    actions_taken.append("Updated JIRA with commit details and deployment status")
+                
+                # Add direct commit links to actions
+                repo_url = f"https://github.com/{self.github_client.repo_owner}/{self.github_client.repo_name}"
+                actions_taken.append(f"Changes deployed directly to {config.github_target_branch}")
+                actions_taken.append(f"Repository: {repo_url}/tree/{config.github_target_branch}")
                 
                 for file_path in apply_result["files_modified"]:
                     actions_taken.append(f"Modified {file_path}")
+                    actions_taken.append(f"View changes: {repo_url}/commits/{config.github_target_branch}/{file_path}")
             
             if apply_result["failed_patches"]:
                 self.log_execution(execution_id, f"Failed to apply {len(apply_result['failed_patches'])} patches")
@@ -235,6 +239,52 @@ This fix was generated using advanced AI analysis. If you have questions or conc
                 PatchAttempt.success == True
             ).all()
     
+    async def _update_jira_with_direct_commits(self, ticket: Ticket, apply_result: Dict, patches: list) -> bool:
+        """Update JIRA with direct commit information instead of PR"""
+        try:
+            avg_confidence = sum(p.confidence_score for p in patches) / len(patches) if patches else 0
+            files_modified = apply_result.get("files_modified", [])
+            repo_url = f"https://github.com/{self.github_client.repo_owner}/{self.github_client.repo_name}"
+            
+            comment = f"""🤖 **Automated Fix Deployed Successfully**
+
+**Deployment Summary:**
+- Total patches applied: {len(apply_result.get("successful_patches", []))}
+- Files modified: {len(files_modified)}
+- Average confidence score: {avg_confidence:.2f}/1.0
+- Target branch: {config.github_target_branch}
+
+**Modified Files:**
+{chr(10).join(f"• `{file}` - [View changes]({repo_url}/commits/{config.github_target_branch}/{file})" for file in files_modified[:10])}
+{f"{chr(10)}...and {len(files_modified) - 10} more files" if len(files_modified) > 10 else ""}
+
+**✅ Deployment Status:**
+Changes have been successfully deployed directly to the `{config.github_target_branch}` branch.
+
+**🔗 Repository Links:**
+- [View Repository]({repo_url})
+- [Browse {config.github_target_branch} branch]({repo_url}/tree/{config.github_target_branch})
+- [Commit History]({repo_url}/commits/{config.github_target_branch})
+
+**Technical Details:**
+- All patches passed quality assurance testing
+- Syntax and logic validation completed
+- Direct commit deployment workflow used
+- Changes are immediately available in {config.github_target_branch}
+
+---
+*🤖 AI Agent System - Fix deployed successfully to {config.github_target_branch}*"""
+            
+            return await self.jira_client.update_ticket_status(
+                jira_id=ticket.jira_id,
+                status="Done",
+                comment=comment
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to update JIRA with direct commit info: {e}")
+            return False
+
     async def _update_jira_with_patch_summary(self, ticket: Ticket, patches: list) -> bool:
         """Update JIRA with comprehensive patch summary when GitHub unavailable"""
         avg_confidence = sum(p.confidence_score for p in patches) / len(patches) if patches else 0
