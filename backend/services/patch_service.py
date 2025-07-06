@@ -657,63 +657,251 @@ class PatchService:
             return "unknown_signature"
     
     def _apply_unified_diff_enhanced(self, content: str, diff: str, file_path: str) -> Optional[str]:
-        """Enhanced unified diff application with fuzzy matching and better error handling"""
+        """Enhanced unified diff application with comprehensive debugging and fuzzy matching"""
         try:
             logger.info(f"🔧 Applying enhanced unified diff to {file_path}")
+            logger.debug(f"📝 Diff content:\n{diff}")
+            logger.debug(f"📄 Original file content (first 500 chars):\n{content[:500]}...")
+            
+            # Parse diff content with validation
+            hunks = self._parse_unified_diff_hunks(diff)
+            if not hunks:
+                logger.error("❌ No valid hunks found in diff")
+                # Try fallback strategy for simple changes
+                return self._apply_fallback_strategy(content, diff, file_path)
+            
+            logger.info(f"🎯 Found {len(hunks)} hunks to apply")
+            
             lines = content.split('\n')
-            diff_lines = diff.split('\n')
             result_lines = lines.copy()
+            applied_hunks = 0
             
-            # Log original content info
-            logger.debug(f"📝 Original content: {len(lines)} lines")
-            
-            i = 0
-            hunks_applied = 0
-            
-            while i < len(diff_lines):
-                line = diff_lines[i]
-                
-                if line.startswith('@@'):
-                    # Parse hunk header with better validation
-                    hunk_match = re.match(r'@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@(.*)$', line)
-                    if not hunk_match:
-                        logger.warning(f"⚠️ Invalid hunk header format: {line}")
-                        i += 1
-                        continue
-                    
-                    old_start = int(hunk_match.group(1)) - 1  # Convert to 0-based
-                    old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
-                    new_start = int(hunk_match.group(3)) - 1  # Convert to 0-based
-                    new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
-                    context_info = hunk_match.group(5).strip() if len(hunk_match.groups()) > 4 else ""
-                    
-                    logger.debug(f"🎯 Processing hunk: old_start={old_start+1}, old_count={old_count}, new_start={new_start+1}, new_count={new_count}")
-                    if context_info:
-                        logger.debug(f"📋 Context: {context_info}")
-                    
-                    # Enhanced hunk processing with fuzzy matching
-                    hunk_result = self._apply_hunk_enhanced(result_lines, diff_lines, i + 1, old_start, old_count, file_path)
-                    if hunk_result:
-                        result_lines, processed_lines = hunk_result
-                        hunks_applied += 1
-                        i += processed_lines + 1  # Skip processed diff lines
-                        logger.debug(f"✅ Successfully applied hunk {hunks_applied}")
-                    else:
-                        logger.error(f"❌ Failed to apply hunk starting at line {old_start + 1}")
-                        # Try to continue with next hunk instead of failing completely
-                        i += 1
+            # Apply hunks in reverse order to maintain line numbers
+            for i, hunk in enumerate(reversed(hunks)):
+                logger.info(f"🔧 Applying hunk {len(hunks)-i}/{len(hunks)}")
+                success = self._apply_single_hunk_with_debugging(result_lines, hunk, file_path)
+                if success:
+                    applied_hunks += 1
+                    logger.info(f"✅ Hunk applied successfully")
                 else:
-                    i += 1
+                    logger.error(f"❌ Failed to apply hunk starting at line {hunk.get('target_start', 'unknown')}")
             
-            if hunks_applied > 0:
-                logger.info(f"✅ Successfully applied {hunks_applied} hunks to {file_path}")
-                return '\n'.join(result_lines)
-            else:
-                logger.warning(f"⚠️ No hunks were successfully applied to {file_path}")
-                return None
-                
+            if applied_hunks == 0:
+                logger.error(f"❌ All {len(hunks)} hunks failed to apply")
+                # Try fallback strategy
+                return self._apply_fallback_strategy(content, diff, file_path)
+            elif applied_hunks < len(hunks):
+                logger.warning(f"⚠️ Partial application: {applied_hunks}/{len(hunks)} hunks applied successfully")
+            
+            result_content = '\n'.join(result_lines)
+            logger.info(f"✅ Diff application completed: {applied_hunks}/{len(hunks)} hunks applied")
+            return result_content
+            
         except Exception as e:
             logger.error(f"❌ Error in enhanced unified diff application: {e}")
+            # Try fallback strategy on exception
+            return self._apply_fallback_strategy(content, diff, file_path)
+
+    def _parse_unified_diff_hunks(self, diff: str) -> List[Dict[str, Any]]:
+        """Parse unified diff into structured hunks with comprehensive validation"""
+        hunks = []
+        diff_lines = diff.split('\n')
+        
+        i = 0
+        while i < len(diff_lines):
+            line = diff_lines[i].strip()
+            
+            if line.startswith('@@'):
+                # Parse hunk header with improved regex
+                hunk_match = re.match(r'@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$', line)
+                if not hunk_match:
+                    logger.warning(f"⚠️ Invalid hunk header format: {line}")
+                    i += 1
+                    continue
+                
+                old_start = int(hunk_match.group(1)) - 1  # Convert to 0-based
+                old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+                new_start = int(hunk_match.group(3)) - 1  # Convert to 0-based
+                new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
+                context_info = hunk_match.group(5).strip() if hunk_match.group(5) else ""
+                
+                # Collect hunk content
+                hunk_content = []
+                j = i + 1
+                while j < len(diff_lines) and not diff_lines[j].startswith('@@'):
+                    if diff_lines[j].strip():  # Skip empty lines
+                        hunk_content.append(diff_lines[j])
+                    j += 1
+                
+                hunk = {
+                    'target_start': old_start,
+                    'target_count': old_count,
+                    'new_start': new_start,
+                    'new_count': new_count,
+                    'context_info': context_info,
+                    'content': hunk_content,
+                    'header': line
+                }
+                
+                hunks.append(hunk)
+                logger.debug(f"📋 Parsed hunk: lines {old_start+1}-{old_start+old_count} -> {new_start+1}-{new_start+new_count}")
+                i = j
+            else:
+                i += 1
+        
+        return hunks
+
+    def _apply_single_hunk_with_debugging(self, lines: List[str], hunk: Dict[str, Any], file_path: str) -> bool:
+        """Apply single hunk with comprehensive debugging and fuzzy matching"""
+        try:
+            target_start = hunk['target_start']
+            target_count = hunk['target_count']
+            hunk_content = hunk['content']
+            
+            logger.debug(f"🎯 Applying hunk at line {target_start+1}, count {target_count}")
+            logger.debug(f"📝 Hunk content ({len(hunk_content)} lines):")
+            for i, line in enumerate(hunk_content[:5]):  # Show first 5 lines
+                logger.debug(f"  {i+1}: {line}")
+            
+            # Parse hunk content into operations
+            context_lines = []
+            removals = []
+            additions = []
+            
+            current_line = target_start
+            for content_line in hunk_content:
+                if content_line.startswith(' '):
+                    # Context line
+                    context_lines.append((current_line, content_line[1:]))
+                    current_line += 1
+                elif content_line.startswith('-'):
+                    # Removal
+                    removals.append((current_line, content_line[1:]))
+                    current_line += 1
+                elif content_line.startswith('+'):
+                    # Addition (doesn't advance current_line)
+                    additions.append((current_line, content_line[1:]))
+            
+            # Validate context lines with fuzzy matching
+            context_matches = 0
+            total_context = len(context_lines)
+            
+            logger.debug(f"🔍 Validating {total_context} context lines")
+            for line_idx, expected_content in context_lines:
+                if line_idx < len(lines):
+                    actual_content = lines[line_idx]
+                    if self._fuzzy_line_match(actual_content, expected_content):
+                        context_matches += 1
+                        logger.debug(f"✓ Context match at line {line_idx+1}")
+                    else:
+                        logger.debug(f"✗ Context mismatch at line {line_idx+1}:")
+                        logger.debug(f"  Expected: '{expected_content}'")
+                        logger.debug(f"  Actual:   '{actual_content}'")
+                else:
+                    logger.debug(f"✗ Line {line_idx+1} out of bounds (file has {len(lines)} lines)")
+            
+            # Calculate context validation score
+            context_score = context_matches / total_context if total_context > 0 else 1.0
+            logger.info(f"📊 Context validation: {context_matches}/{total_context} ({context_score:.2%})")
+            
+            # Apply changes if context validation passes threshold
+            if context_score >= 0.6:  # Lowered threshold for more flexibility
+                # Apply removals in reverse order
+                for line_idx, expected_content in reversed(removals):
+                    if line_idx < len(lines):
+                        actual_content = lines[line_idx]
+                        if self._fuzzy_line_match(actual_content, expected_content):
+                            lines.pop(line_idx)
+                            logger.debug(f"➖ Removed line {line_idx+1}: '{expected_content[:50]}...'")
+                        else:
+                            logger.warning(f"⚠️ Could not remove line {line_idx+1}, content mismatch")
+                            logger.debug(f"  Expected: '{expected_content}'")
+                            logger.debug(f"  Actual:   '{actual_content}'")
+                
+                # Apply additions
+                for line_idx, new_content in additions:
+                    # Adjust index for previous removals
+                    adjusted_idx = min(line_idx, len(lines))
+                    lines.insert(adjusted_idx, new_content)
+                    logger.debug(f"➕ Added line at {adjusted_idx+1}: '{new_content[:50]}...'")
+                
+                return True
+            else:
+                logger.warning(f"❌ Context validation failed: {context_score:.2%} - skipping hunk")
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error applying single hunk: {e}")
+            return False
+
+    def _fuzzy_line_match(self, actual: str, expected: str) -> bool:
+        """Fuzzy matching for lines to handle whitespace and minor differences"""
+        # Exact match first
+        if actual == expected:
+            return True
+        
+        # Normalize whitespace
+        actual_norm = re.sub(r'\s+', ' ', actual.strip())
+        expected_norm = re.sub(r'\s+', ' ', expected.strip())
+        
+        if actual_norm == expected_norm:
+            return True
+        
+        # Check similarity for minor differences (typos, etc.)
+        if len(actual_norm) > 0 and len(expected_norm) > 0:
+            # Simple character difference check
+            if abs(len(actual_norm) - len(expected_norm)) <= 2:
+                differences = sum(c1 != c2 for c1, c2 in zip(actual_norm, expected_norm))
+                differences += abs(len(actual_norm) - len(expected_norm))
+                similarity = 1 - (differences / max(len(actual_norm), len(expected_norm)))
+                return similarity >= 0.9
+        
+        return False
+
+    def _apply_fallback_strategy(self, content: str, diff: str, file_path: str) -> Optional[str]:
+        """Fallback strategy for when unified diff fails - extract core changes"""
+        try:
+            logger.info(f"🔄 Applying fallback strategy for {file_path}")
+            
+            # Try to extract simple line replacements from diff
+            lines = content.split('\n')
+            diff_lines = diff.split('\n')
+            
+            # Look for simple - and + pairs (line replacements)
+            removals = []
+            additions = []
+            
+            for line in diff_lines:
+                if line.startswith('-') and not line.startswith('---'):
+                    removals.append(line[1:])
+                elif line.startswith('+') and not line.startswith('+++'):
+                    additions.append(line[1:])
+            
+            # If we have equal numbers of removals and additions, try direct replacement
+            if len(removals) == len(additions) and len(removals) > 0:
+                logger.info(f"🔄 Attempting direct line replacement: {len(removals)} lines")
+                
+                result_lines = lines.copy()
+                replacements_made = 0
+                
+                for removal, addition in zip(removals, additions):
+                    # Find the removal line using fuzzy matching
+                    for i, line in enumerate(result_lines):
+                        if self._fuzzy_line_match(line, removal):
+                            result_lines[i] = addition
+                            replacements_made += 1
+                            logger.debug(f"🔄 Replaced line {i+1}: '{removal[:50]}...' -> '{addition[:50]}...'")
+                            break
+                
+                if replacements_made > 0:
+                    logger.info(f"✅ Fallback strategy succeeded: {replacements_made} replacements made")
+                    return '\n'.join(result_lines)
+            
+            logger.warning(f"⚠️ Fallback strategy could not process diff for {file_path}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error in fallback strategy: {e}")
             return None
     
     def _apply_hunk_enhanced(self, lines: List[str], diff_lines: List[str], start_idx: int, old_start: int, old_count: int, file_path: str) -> Optional[Tuple[List[str], int]]:
