@@ -27,9 +27,16 @@ class PatchService:
         self.websocket_manager = WebSocketManager()
         self.max_safe_hunk_size = 50  # Reject patches with hunks larger than this
         self.approval_cache = {}  # Cache for approval decisions
+        self.execution_state = {}  # Track patch execution to prevent duplicates
     
     async def apply_patches_intelligently(self, patches: List[Dict[str, Any]], ticket_id: int) -> Dict[str, Any]:
         """Apply patches with surgical precision and enhanced validation"""
+        # Check for duplicate execution
+        execution_key = f"ticket_{ticket_id}_{len(patches)}"
+        if execution_key in self.execution_state:
+            logger.warning(f"⚠️ Preventing duplicate execution for {execution_key}")
+            return self.execution_state[execution_key]
+        
         results = {
             "successful_patches": [],
             "failed_patches": [],
@@ -39,6 +46,9 @@ class PatchService:
             "patch_quality_scores": [],
             "validation_failures": []
         }
+        
+        # Mark execution as in progress
+        self.execution_state[execution_key] = {"status": "in_progress", "start_time": asyncio.get_event_loop().time()}
         
         logger.info(f"🔧 Applying {len(patches)} surgical patches to: {self.target_branch}")
         
@@ -56,22 +66,26 @@ class PatchService:
         
         if not validated_patches:
             logger.error("❌ All patches failed pre-validation")
-            return {
+            error_result = {
                 **results,
                 "error": "All patches failed pre-validation for safety",
                 "all_patches_rejected": True
             }
+            self.execution_state[execution_key] = error_result
+            return error_result
         
         logger.info(f"✅ {len(validated_patches)} patches passed pre-validation")
         
         # Validate target branch exists
         if not await self._validate_target_branch():
             logger.error(f"❌ Target branch {self.target_branch} not accessible")
-            return {
+            error_result = {
                 **results,
                 "error": f"Target branch {self.target_branch} not accessible",
                 "branch_validation_failed": True
             }
+            self.execution_state[execution_key] = error_result
+            return error_result
         
         # Group patches by file for atomic operations
         patches_by_file = self._group_patches_by_file(validated_patches)
@@ -120,6 +134,9 @@ class PatchService:
             logger.info(f"📊 Overall patch quality score: {avg_quality:.3f} ({surgical_patches} surgical)")
         
         logger.info(f"🎉 COMPLETED: {len(results['successful_patches'])} successful, {len(results['failed_patches'])} failed")
+        
+        # Cache successful result
+        self.execution_state[execution_key] = results
         return results
     
     def _pre_validate_patch_safety(self, patch: Dict[str, Any]) -> bool:
@@ -516,41 +533,96 @@ class PatchService:
             return {"success": False, "error": str(e)}
     
     def _apply_unified_diff(self, content: str, diff: str) -> Optional[str]:
-        """Apply unified diff to content"""
+        """Apply unified diff to content with proper hunk-based processing"""
         try:
-            # Simple unified diff application
             lines = content.split('\n')
             diff_lines = diff.split('\n')
-            
-            # This is a simplified implementation
-            # In production, you'd want to use a proper diff library like python-diff
             result_lines = lines.copy()
             
             i = 0
             while i < len(diff_lines):
                 line = diff_lines[i]
+                
                 if line.startswith('@@'):
-                    # Parse hunk header: @@ -start,count +start,count @@
-                    # For simplicity, we'll just apply line-by-line changes
+                    # Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+                    hunk_match = re.match(r'@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@', line)
+                    if not hunk_match:
+                        logger.warning(f"⚠️ Invalid hunk header: {line}")
+                        i += 1
+                        continue
+                    
+                    old_start = int(hunk_match.group(1)) - 1  # Convert to 0-based
+                    old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+                    new_start = int(hunk_match.group(3)) - 1  # Convert to 0-based
+                    
+                    # Process the hunk
+                    hunk_result = self._apply_hunk(result_lines, diff_lines, i + 1, old_start, old_count)
+                    if hunk_result:
+                        result_lines, processed_lines = hunk_result
+                        i += processed_lines + 1  # Skip processed diff lines
+                    else:
+                        logger.error(f"❌ Failed to apply hunk starting at line {old_start + 1}")
+                        return None
+                else:
                     i += 1
-                    continue
-                elif line.startswith('-'):
-                    # Line to remove - find and remove it
-                    content_to_remove = line[1:]
-                    try:
-                        idx = result_lines.index(content_to_remove)
-                        result_lines.pop(idx)
-                    except ValueError:
-                        logger.warning(f"⚠️ Could not find line to remove: {content_to_remove[:50]}...")
-                elif line.startswith('+'):
-                    # Line to add - this is more complex, for now append
-                    content_to_add = line[1:]
-                    # Simple approach: add after the last removed line
-                    result_lines.append(content_to_add)
-                i += 1
             
             return '\n'.join(result_lines)
             
         except Exception as e:
             logger.error(f"❌ Error applying unified diff: {e}")
+            return None
+    
+    def _apply_hunk(self, lines: List[str], diff_lines: List[str], start_idx: int, old_start: int, old_count: int) -> Optional[Tuple[List[str], int]]:
+        """Apply a single hunk to the lines"""
+        try:
+            result_lines = lines.copy()
+            current_old_line = old_start
+            processed_diff_lines = 0
+            
+            # Collect changes from this hunk
+            removals = []
+            additions = []
+            
+            i = start_idx
+            while i < len(diff_lines):
+                diff_line = diff_lines[i]
+                
+                if diff_line.startswith('@@'):
+                    # Next hunk, stop here
+                    break
+                elif diff_line.startswith(' '):
+                    # Context line - verify it matches
+                    expected_line = diff_line[1:]
+                    if current_old_line < len(result_lines) and result_lines[current_old_line] == expected_line:
+                        current_old_line += 1
+                    else:
+                        logger.warning(f"⚠️ Context mismatch at line {current_old_line + 1}")
+                elif diff_line.startswith('-'):
+                    # Line to remove
+                    removals.append((current_old_line, diff_line[1:]))
+                    current_old_line += 1
+                elif diff_line.startswith('+'):
+                    # Line to add
+                    additions.append((current_old_line, diff_line[1:]))
+                
+                processed_diff_lines += 1
+                i += 1
+            
+            # Apply removals in reverse order to maintain line numbers
+            for line_idx, expected_content in reversed(removals):
+                if line_idx < len(result_lines) and result_lines[line_idx] == expected_content:
+                    result_lines.pop(line_idx)
+                else:
+                    logger.warning(f"⚠️ Could not find expected line to remove at {line_idx + 1}: {expected_content[:50]}...")
+            
+            # Apply additions
+            for line_idx, new_content in additions:
+                # Adjust index for previous removals
+                adjusted_idx = min(line_idx, len(result_lines))
+                result_lines.insert(adjusted_idx, new_content)
+            
+            return result_lines, processed_diff_lines
+            
+        except Exception as e:
+            logger.error(f"❌ Error applying hunk: {e}")
             return None
