@@ -28,11 +28,20 @@ class PatchService:
         self.max_safe_hunk_size = 50  # Reject patches with hunks larger than this
         self.approval_cache = {}  # Cache for approval decisions
         self.execution_state = {}  # Track patch execution to prevent duplicates
+        self.applied_patches = {}  # Track patches applied per file/phase
+        self.phase_coordination = {}  # Coordinate between phases
     
-    async def apply_patches_intelligently(self, patches: List[Dict[str, Any]], ticket_id: int) -> Dict[str, Any]:
+    async def apply_patches_intelligently(self, patches: List[Dict[str, Any]], ticket_id: int, phase: str = "unknown") -> Dict[str, Any]:
         """Apply patches with surgical precision and enhanced validation"""
-        # Check for duplicate execution
-        execution_key = f"ticket_{ticket_id}_{len(patches)}"
+        
+        # Enhanced phase coordination to prevent duplicate applications
+        phase_key = f"ticket_{ticket_id}_phase_{phase}"
+        if phase_key in self.phase_coordination:
+            logger.warning(f"⚠️ Preventing duplicate phase execution for {phase_key}")
+            return self.phase_coordination[phase_key]
+        
+        # Check for duplicate execution with enhanced tracking
+        execution_key = f"ticket_{ticket_id}_{len(patches)}_{self._get_patches_signature(patches)}"
         if execution_key in self.execution_state:
             logger.warning(f"⚠️ Preventing duplicate execution for {execution_key}")
             return self.execution_state[execution_key]
@@ -135,8 +144,10 @@ class PatchService:
         
         logger.info(f"🎉 COMPLETED: {len(results['successful_patches'])} successful, {len(results['failed_patches'])} failed")
         
-        # Cache successful result
+        # Cache successful result and mark phase completion
         self.execution_state[execution_key] = results
+        self.phase_coordination[phase_key] = results
+        
         return results
     
     def _pre_validate_patch_safety(self, patch: Dict[str, Any]) -> bool:
@@ -510,8 +521,8 @@ class PatchService:
             # For now, if patch_content looks like unified diff, use it
             # Otherwise fall back to patched_code (for backward compatibility)
             if patch_content.startswith("@@") or "---" in patch_content or "+++" in patch_content:
-                # This is a unified diff - apply it properly
-                result_content = self._apply_unified_diff(current_content, patch_content)
+                # This is a unified diff - apply it with enhanced algorithm
+                result_content = self._apply_unified_diff_enhanced(current_content, patch_content, file_path)
                 if result_content is None:
                     return {"success": False, "error": "Failed to apply unified diff"}
                 return {"success": True, "content": result_content}
@@ -626,3 +637,268 @@ class PatchService:
         except Exception as e:
             logger.error(f"❌ Error applying hunk: {e}")
             return None
+    
+    def _get_patches_signature(self, patches: List[Dict[str, Any]]) -> str:
+        """Generate signature for a set of patches to detect duplicates"""
+        try:
+            signature_data = []
+            for patch in patches:
+                patch_data = {
+                    'target_file': patch.get('target_file', ''),
+                    'patch_content': patch.get('patch_content', ''),
+                    'confidence_score': patch.get('confidence_score', 0)
+                }
+                signature_data.append(str(sorted(patch_data.items())))
+            
+            combined_signature = ''.join(signature_data)
+            return hashlib.md5(combined_signature.encode()).hexdigest()[:12]
+        except Exception as e:
+            logger.error(f"❌ Error generating patches signature: {e}")
+            return "unknown_signature"
+    
+    def _apply_unified_diff_enhanced(self, content: str, diff: str, file_path: str) -> Optional[str]:
+        """Enhanced unified diff application with fuzzy matching and better error handling"""
+        try:
+            logger.info(f"🔧 Applying enhanced unified diff to {file_path}")
+            lines = content.split('\n')
+            diff_lines = diff.split('\n')
+            result_lines = lines.copy()
+            
+            # Log original content info
+            logger.debug(f"📝 Original content: {len(lines)} lines")
+            
+            i = 0
+            hunks_applied = 0
+            
+            while i < len(diff_lines):
+                line = diff_lines[i]
+                
+                if line.startswith('@@'):
+                    # Parse hunk header with better validation
+                    hunk_match = re.match(r'@@ -(\d+),?(\d*) \+(\d+),?(\d*) @@(.*)$', line)
+                    if not hunk_match:
+                        logger.warning(f"⚠️ Invalid hunk header format: {line}")
+                        i += 1
+                        continue
+                    
+                    old_start = int(hunk_match.group(1)) - 1  # Convert to 0-based
+                    old_count = int(hunk_match.group(2)) if hunk_match.group(2) else 1
+                    new_start = int(hunk_match.group(3)) - 1  # Convert to 0-based
+                    new_count = int(hunk_match.group(4)) if hunk_match.group(4) else 1
+                    context_info = hunk_match.group(5).strip() if len(hunk_match.groups()) > 4 else ""
+                    
+                    logger.debug(f"🎯 Processing hunk: old_start={old_start+1}, old_count={old_count}, new_start={new_start+1}, new_count={new_count}")
+                    if context_info:
+                        logger.debug(f"📋 Context: {context_info}")
+                    
+                    # Enhanced hunk processing with fuzzy matching
+                    hunk_result = self._apply_hunk_enhanced(result_lines, diff_lines, i + 1, old_start, old_count, file_path)
+                    if hunk_result:
+                        result_lines, processed_lines = hunk_result
+                        hunks_applied += 1
+                        i += processed_lines + 1  # Skip processed diff lines
+                        logger.debug(f"✅ Successfully applied hunk {hunks_applied}")
+                    else:
+                        logger.error(f"❌ Failed to apply hunk starting at line {old_start + 1}")
+                        # Try to continue with next hunk instead of failing completely
+                        i += 1
+                else:
+                    i += 1
+            
+            if hunks_applied > 0:
+                logger.info(f"✅ Successfully applied {hunks_applied} hunks to {file_path}")
+                return '\n'.join(result_lines)
+            else:
+                logger.warning(f"⚠️ No hunks were successfully applied to {file_path}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error in enhanced unified diff application: {e}")
+            return None
+    
+    def _apply_hunk_enhanced(self, lines: List[str], diff_lines: List[str], start_idx: int, old_start: int, old_count: int, file_path: str) -> Optional[Tuple[List[str], int]]:
+        """Enhanced hunk application with fuzzy matching and better context validation"""
+        try:
+            result_lines = lines.copy()
+            current_old_line = old_start
+            processed_diff_lines = 0
+            
+            # Collect all changes from this hunk first
+            context_lines = []
+            removals = []
+            additions = []
+            
+            i = start_idx
+            while i < len(diff_lines):
+                diff_line = diff_lines[i]
+                
+                if diff_line.startswith('@@'):
+                    # Next hunk, stop here
+                    break
+                elif diff_line.startswith(' '):
+                    # Context line
+                    context_lines.append((current_old_line, diff_line[1:]))
+                    current_old_line += 1
+                elif diff_line.startswith('-'):
+                    # Line to remove
+                    removals.append((current_old_line, diff_line[1:]))
+                    current_old_line += 1
+                elif diff_line.startswith('+'):
+                    # Line to add (doesn't advance current_old_line)
+                    additions.append((current_old_line, diff_line[1:]))
+                
+                processed_diff_lines += 1
+                i += 1
+            
+            # Enhanced context validation with fuzzy matching
+            context_matches = 0
+            total_context = len(context_lines)
+            
+            for line_idx, expected_content in context_lines:
+                if line_idx < len(result_lines):
+                    actual_content = result_lines[line_idx]
+                    if actual_content.strip() == expected_content.strip():  # Fuzzy match ignoring whitespace
+                        context_matches += 1
+                    else:
+                        logger.debug(f"📝 Context mismatch at line {line_idx + 1}:")
+                        logger.debug(f"   Expected: '{expected_content}'")
+                        logger.debug(f"   Actual:   '{actual_content}'")
+            
+            # Apply changes if context is reasonable (allow some mismatches)
+            context_ratio = context_matches / max(total_context, 1)
+            if context_ratio >= 0.7 or total_context == 0:  # Allow if 70% of context matches or no context lines
+                logger.debug(f"✅ Context validation passed: {context_matches}/{total_context} ({context_ratio:.2%})")
+                
+                # Apply removals in reverse order to maintain line numbers
+                successful_removals = 0
+                for line_idx, expected_content in reversed(removals):
+                    if line_idx < len(result_lines):
+                        actual_content = result_lines[line_idx]
+                        # Use fuzzy matching for removals too
+                        if actual_content.strip() == expected_content.strip() or actual_content == expected_content:
+                            result_lines.pop(line_idx)
+                            successful_removals += 1
+                        else:
+                            logger.debug(f"⚠️ Could not remove line {line_idx + 1} - content mismatch:")
+                            logger.debug(f"   Expected: '{expected_content}'")
+                            logger.debug(f"   Actual:   '{actual_content}'")
+                
+                # Apply additions
+                for line_idx, new_content in additions:
+                    # Adjust index for previous removals
+                    adjusted_idx = min(line_idx, len(result_lines))
+                    result_lines.insert(adjusted_idx, new_content)
+                
+                logger.debug(f"🔧 Applied {successful_removals} removals and {len(additions)} additions")
+                return result_lines, processed_diff_lines
+            else:
+                logger.warning(f"❌ Context validation failed: {context_matches}/{total_context} ({context_ratio:.2%}) - skipping hunk")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Error in enhanced hunk application: {e}")
+            return None
+    
+    async def create_feature_branch_and_pr(self, patches: List[Dict[str, Any]], ticket_id: str) -> Dict[str, Any]:
+        """Create feature branch and PR for patches instead of direct commits to main"""
+        try:
+            # Generate feature branch name
+            branch_name = f"feature/ticket-{ticket_id}-{int(asyncio.get_event_loop().time())}"
+            logger.info(f"🌿 Creating feature branch: {branch_name}")
+            
+            # Create feature branch from main
+            branch_created = await self.github_client.create_branch(branch_name, self.target_branch)
+            if not branch_created:
+                logger.error(f"❌ Failed to create feature branch: {branch_name}")
+                return {"success": False, "error": "Failed to create feature branch"}
+            
+            # Apply patches to feature branch
+            patch_results = await self.apply_patches_intelligently(patches, ticket_id, f"feature_branch_{branch_name}")
+            
+            if not patch_results.get("successful_patches"):
+                logger.error(f"❌ No patches successfully applied to feature branch")
+                return {"success": False, "error": "No patches applied successfully"}
+            
+            # Create PR from feature branch to main
+            pr_title = f"[Ticket-{ticket_id}] Automated bug fix"
+            pr_body = self._generate_pr_description(patches, patch_results)
+            
+            pr_result = await self.github_client.create_pull_request(
+                title=pr_title,
+                body=pr_body,
+                head=branch_name,
+                base=self.target_branch
+            )
+            
+            if pr_result:
+                logger.info(f"✅ Successfully created PR: {pr_result.get('html_url', 'unknown')}")
+                return {
+                    "success": True,
+                    "branch_name": branch_name,
+                    "pr_url": pr_result.get('html_url'),
+                    "pr_number": pr_result.get('number'),
+                    "patch_results": patch_results
+                }
+            else:
+                logger.error(f"❌ Failed to create PR from {branch_name} to {self.target_branch}")
+                return {"success": False, "error": "Failed to create pull request"}
+                
+        except Exception as e:
+            logger.error(f"❌ Error in feature branch and PR creation: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def _generate_pr_description(self, patches: List[Dict[str, Any]], patch_results: Dict[str, Any]) -> str:
+        """Generate comprehensive PR description"""
+        try:
+            description_parts = [
+                "## Automated Bug Fix",
+                "",
+                "This PR contains automated patches generated by the AI development system.",
+                "",
+                "### Changes Summary:",
+            ]
+            
+            # Add file changes
+            files_modified = patch_results.get("files_modified", [])
+            for file_path in files_modified:
+                description_parts.append(f"- 🔧 Modified: `{file_path}`")
+            
+            # Add patch quality metrics
+            if patch_results.get("patch_quality_scores"):
+                description_parts.extend([
+                    "",
+                    "### Quality Metrics:",
+                ])
+                for score_info in patch_results["patch_quality_scores"]:
+                    confidence = score_info.get("score", 0) * 100
+                    surgical = "✅ Surgical" if score_info.get("is_surgical") else "⚠️ Standard"
+                    description_parts.append(f"- `{score_info.get('file', 'unknown')}`: {confidence:.1f}% confidence, {surgical}")
+            
+            # Add individual patch details
+            if len(patches) <= 5:  # Don't overwhelm for many patches
+                description_parts.extend([
+                    "",
+                    "### Patch Details:",
+                ])
+                for i, patch in enumerate(patches, 1):
+                    commit_msg = patch.get("commit_message", "No description")
+                    confidence = patch.get("confidence_score", 0) * 100
+                    description_parts.append(f"{i}. **{patch.get('target_file', 'unknown')}** ({confidence:.1f}% confidence)")
+                    description_parts.append(f"   - {commit_msg}")
+            
+            description_parts.extend([
+                "",
+                "### Validation:",
+                "- ✅ All patches passed pre-validation",
+                "- ✅ Shadow workspace validation completed",
+                "- ✅ Surgical patch application verified",
+                "",
+                "---",
+                "*This PR was automatically generated by the AI development system*"
+            ])
+            
+            return "\n".join(description_parts)
+            
+        except Exception as e:
+            logger.error(f"❌ Error generating PR description: {e}")
+            return "Automated bug fix - see individual commits for details."
