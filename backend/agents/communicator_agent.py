@@ -59,40 +59,33 @@ class CommunicatorAgent(BaseAgent):
             }
         
         try:
-            # Create feature branch and PR workflow
-            self.log_execution(execution_id, f"Creating feature branch and PR for {len(successful_patches)} patches targeting {config.github_target_branch}")
+            # Apply patches directly to target branch
+            self.log_execution(execution_id, f"Applying {len(successful_patches)} patches directly to {config.github_target_branch}")
             
             # Convert patches for processing
             patch_dicts = self._prepare_patches_for_deployment(successful_patches, ticket)
             
-            # Create comprehensive PR with feature branch
-            pr_result = await self._create_comprehensive_pr(ticket, {"successful_patches": patch_dicts}, successful_patches)
+            # Apply patches directly to target branch
+            apply_result = await self._apply_patches_directly(ticket, {"successful_patches": patch_dicts}, successful_patches)
             github_operations = True
             
-            if pr_result:
-                self.log_execution(execution_id, f"Successfully created PR #{pr_result.get('number')} for {ticket.jira_id}")
-                actions_taken.append(f"Created PR #{pr_result.get('number')} with {len(successful_patches)} patches")
-                actions_taken.append(f"PR targets {config.github_target_branch} branch")
+            if apply_result:
+                self.log_execution(execution_id, f"Successfully applied {len(successful_patches)} patches to {config.github_target_branch} for {ticket.jira_id}")
+                actions_taken.append(f"Applied {len(successful_patches)} patches directly to {config.github_target_branch}")
+                actions_taken.append(f"Files modified: {len(apply_result.get('files_modified', []))}")
                 
-                # Update JIRA with PR information
-                jira_updated = await self._update_jira_with_pr_info(ticket, pr_result, successful_patches)
+                # Update JIRA with direct commit information
+                jira_updated = await self._update_jira_with_direct_commits(ticket, apply_result, successful_patches)
                 if jira_updated:
-                    actions_taken.append("Updated JIRA with PR details and approval workflow")
+                    actions_taken.append("Updated JIRA with deployment details")
                 
-                # Add PR links to actions
-                pr_url = pr_result.get('html_url', '')
-                if pr_url:
-                    actions_taken.append(f"Review PR: {pr_url}")
+                # Add repository links to actions
+                repo_url = f"https://github.com/{self.github_client.repo_owner}/{self.github_client.repo_name}"
+                actions_taken.append(f"View changes: {repo_url}/commits/{config.github_target_branch}")
                 
-                pr_info = {
-                    "number": pr_result.get('number'),
-                    "url": pr_url,
-                    "head_branch": pr_result.get('head', {}).get('ref'),
-                    "base_branch": pr_result.get('base', {}).get('ref')
-                }
             else:
-                self.log_execution(execution_id, f"Failed to create PR for {ticket.jira_id}")
-                actions_taken.append("Failed to create PR - see logs for details")
+                self.log_execution(execution_id, f"Failed to apply patches to {config.github_target_branch} for {ticket.jira_id}")
+                actions_taken.append("Failed to apply patches - see logs for details")
             
         except Exception as e:
             self.log_execution(execution_id, f"Error in enhanced communication process: {e}")
@@ -133,66 +126,41 @@ class CommunicatorAgent(BaseAgent):
             patch_dicts.append(patch_dict)
         return patch_dicts
     
-    async def _create_comprehensive_pr(self, ticket: Ticket, apply_result: Dict, patches: list) -> Optional[Dict]:
-        """Create comprehensive GitHub PR with feature branch and patches"""
+    async def _apply_patches_directly(self, ticket: Ticket, apply_result: Dict, patches: list) -> Optional[Dict]:
+        """Apply patches directly to the target branch specified in config"""
         try:
-            # Create feature branch name
-            branch_name = f"ai-fix/{ticket.jira_id.lower()}-{ticket.id}"
-            
-            # Create feature branch from target branch
-            branch_created = await self.github_client.create_branch(branch_name, config.github_target_branch)
-            if not branch_created:
-                logger.error(f"❌ Failed to create feature branch {branch_name}")
-                return None
-            
-            # Apply patches to the feature branch
+            # Apply patches directly to the target branch (from .env file)
+            target_branch = config.github_target_branch
             patch_dicts = apply_result.get("successful_patches", [])
             files_modified = []
+            
+            self.log_execution(0, f"Applying patches directly to target branch: {target_branch}")
             
             for patch_dict in patch_dicts:
                 success = await self.github_client.commit_file(
                     file_path=patch_dict["target_file"],
                     content=patch_dict["patched_code"],
                     commit_message=patch_dict["commit_message"],
-                    branch=branch_name
+                    branch=target_branch
                 )
                 if success:
                     files_modified.append(patch_dict["target_file"])
+                    logger.info(f"✅ Successfully committed {patch_dict['target_file']} to {target_branch}")
                 else:
-                    logger.warning(f"⚠️ Failed to commit {patch_dict['target_file']} to {branch_name}")
+                    logger.warning(f"⚠️ Failed to commit {patch_dict['target_file']} to {target_branch}")
             
             if not files_modified:
-                logger.error(f"❌ No files were successfully committed to {branch_name}")
+                logger.error(f"❌ No files were successfully committed to {target_branch}")
                 return None
-            
-            # Generate comprehensive PR title
-            pr_title = f"🤖 AI Fix: {ticket.title}"
-            if len(pr_title) > 72:
-                pr_title = f"🤖 AI Fix: {ticket.title[:65]}..."
             
             # Update apply_result with actual files modified
             apply_result["files_modified"] = files_modified
             
-            # Generate comprehensive PR description
-            pr_description = self._generate_comprehensive_pr_description(ticket, apply_result, patches)
-            
-            # Create PR
-            pr_result = await self.github_client.create_pull_request(
-                title=pr_title,
-                body=pr_description,
-                head_branch=branch_name,
-                base_branch=config.github_target_branch
-            )
-            
-            if pr_result:
-                logger.info(f"✅ Created comprehensive PR #{pr_result.get('number')} for {ticket.jira_id}")
-                return pr_result
-            else:
-                logger.error(f"❌ Failed to create PR for {ticket.jira_id}")
-                return None
+            logger.info(f"✅ Applied {len(files_modified)} patches directly to {target_branch} for {ticket.jira_id}")
+            return apply_result
                 
         except Exception as e:
-            logger.error(f"❌ Error creating comprehensive PR for {ticket.jira_id}: {e}")
+            logger.error(f"❌ Error applying patches directly to {target_branch} for {ticket.jira_id}: {e}")
             return None
     
     def _generate_comprehensive_pr_description(self, ticket: Ticket, apply_result: Dict, patches: list) -> str:
