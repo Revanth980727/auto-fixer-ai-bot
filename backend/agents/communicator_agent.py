@@ -66,7 +66,7 @@ class CommunicatorAgent(BaseAgent):
             patch_dicts = self._prepare_patches_for_deployment(successful_patches, ticket)
             
             # Apply patches with intelligent handling
-            apply_result = await self.patch_service.apply_patches_intelligently(patch_dicts, ticket.id)
+            apply_result = await self.patch_service.apply_patches_intelligently(patch_dicts, ticket.id, "communication")
             github_operations = True
             
             if apply_result["successful_patches"]:

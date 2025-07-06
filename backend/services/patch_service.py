@@ -40,8 +40,35 @@ class PatchService:
             logger.warning(f"⚠️ Preventing duplicate phase execution for {phase_key}")
             return self.phase_coordination[phase_key]
         
+        # Smart file state checking - detect already applied patches
+        patches_to_apply = []
+        skipped_patches = []
+        
+        for patch in patches:
+            file_path = patch.get('target_file')
+            if file_path and await self._is_patch_already_applied(patch, file_path):
+                logger.info(f"✅ Change already applied to {file_path}, skipping patch")
+                skipped_patches.append(patch)
+            else:
+                patches_to_apply.append(patch)
+        
+        if not patches_to_apply and skipped_patches:
+            logger.info(f"✅ All {len(skipped_patches)} patches already applied - returning success")
+            result = {
+                "successful_patches": skipped_patches,
+                "failed_patches": [],
+                "conflicts_detected": [],
+                "files_modified": [p.get('target_file') for p in skipped_patches],
+                "target_branch": self.target_branch,
+                "patch_quality_scores": [],
+                "validation_failures": [],
+                "patches_already_applied": len(skipped_patches)
+            }
+            self.phase_coordination[phase_key] = result
+            return result
+        
         # Check for duplicate execution with enhanced tracking
-        execution_key = f"ticket_{ticket_id}_{len(patches)}_{self._get_patches_signature(patches)}"
+        execution_key = f"ticket_{ticket_id}_{len(patches_to_apply)}_{self._get_patches_signature(patches_to_apply)}"
         if execution_key in self.execution_state:
             logger.warning(f"⚠️ Preventing duplicate execution for {execution_key}")
             return self.execution_state[execution_key]
@@ -59,11 +86,11 @@ class PatchService:
         # Mark execution as in progress
         self.execution_state[execution_key] = {"status": "in_progress", "start_time": asyncio.get_event_loop().time()}
         
-        logger.info(f"🔧 Applying {len(patches)} surgical patches to: {self.target_branch}")
+        logger.info(f"🔧 Applying {len(patches_to_apply)} surgical patches to: {self.target_branch}")
         
         # Pre-validate all patches for size and content
         validated_patches = []
-        for patch in patches:
+        for patch in patches_to_apply:
             if self._pre_validate_patch_safety(patch):
                 validated_patches.append(patch)
             else:
@@ -1090,3 +1117,62 @@ class PatchService:
         except Exception as e:
             logger.error(f"❌ Error generating PR description: {e}")
             return "Automated bug fix - see individual commits for details."
+    
+    async def _is_patch_already_applied(self, patch: Dict[str, Any], file_path: str) -> bool:
+        """Check if a patch change is already applied to the file"""
+        try:
+            # Get current file content from GitHub
+            current_content = await self.github_client.get_file_content(file_path, self.target_branch)
+            if current_content is None:
+                logger.warning(f"⚠️ File {file_path} not found, cannot check if patch applied")
+                return False
+            
+            # Extract the expected result from the patch
+            patched_code = patch.get('patched_code', '')
+            if not patched_code:
+                return False
+            
+            # For import changes, check if the target import is already present
+            if 'import' in patched_code and 'import' in current_content:
+                # Extract imports from both
+                patched_imports = self._extract_imports(patched_code)
+                current_imports = self._extract_imports(current_content)
+                
+                # Check if all expected imports are present
+                for imp in patched_imports:
+                    if imp in current_imports:
+                        logger.info(f"✅ Import '{imp}' already present in {file_path}")
+                        return True
+            
+            # Check if the patched code section already exists in current content
+            # For small patches, check if key lines are already present
+            patched_lines = [line.strip() for line in patched_code.split('\n') if line.strip()]
+            current_lines = [line.strip() for line in current_content.split('\n') if line.strip()]
+            
+            if len(patched_lines) <= 20:  # For small patches
+                # Check if all non-empty lines from patched code exist in current content
+                matches = 0
+                for line in patched_lines:
+                    if line in current_lines:
+                        matches += 1
+                
+                match_ratio = matches / len(patched_lines) if patched_lines else 0
+                if match_ratio >= 0.8:  # 80% of lines match
+                    logger.info(f"✅ Patch content already applied to {file_path} ({match_ratio:.1%} match)")
+                    return True
+            
+            return False
+            
+        except Exception as e:
+            logger.error(f"❌ Error checking if patch already applied: {e}")
+            return False
+    
+    def _extract_imports(self, code: str) -> List[str]:
+        """Extract import statements from code"""
+        imports = []
+        lines = code.split('\n')
+        for line in lines:
+            line = line.strip()
+            if line.startswith('import ') or line.startswith('from '):
+                imports.append(line)
+        return imports

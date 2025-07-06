@@ -66,7 +66,7 @@ class QAAgent(BaseAgent):
             # Apply patches intelligently with monitoring
             try:
                 patch_start_time = time.time()
-                patch_results = await self.patch_service.apply_patches_intelligently(patches, ticket.id)
+                patch_results = await self.patch_service.apply_patches_intelligently(patches, ticket.id, "qa")
                 patch_duration = time.time() - patch_start_time
                 
                 metrics_collector.record_github_operation("patch_application", patch_duration, True)
