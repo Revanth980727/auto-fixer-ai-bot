@@ -25,7 +25,7 @@ class Config:
         self.github_token = os.getenv("GITHUB_TOKEN")
         self.github_repo_owner = os.getenv("GITHUB_REPO_OWNER")
         self.github_repo_name = os.getenv("GITHUB_REPO_NAME")
-        self.github_target_branch = os.getenv("GITHUB_TARGET_BRANCH", "main")
+        self.github_target_branch = os.getenv("GITHUB_TARGET_BRANCH", "your_branch_name")
         
         # Enhanced Debug logging for critical values
         logger.info("🔧 ENHANCED CONFIGURATION DEBUG - API Keys & Tokens:")

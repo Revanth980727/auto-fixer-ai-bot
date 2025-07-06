@@ -418,7 +418,7 @@ class AgentOrchestrator:
 **Deployment Summary:**
 - Total Processing Time: {(time.time() - pipeline_start_time):.1f}s
 - Patches Applied: {comm_result.get('patches_deployed', 0)}
-- Target Branch: {comm_result.get('target_branch', 'main')}
+- Target Branch: {comm_result.get('target_branch', 'your_branch_name')}
 
 **GitHub Integration:**
 {'✅ **Pull Request Created**' if github_operations and pr_info else '⚠️ **Manual Deployment Required**'}
